@@ -1,7 +1,9 @@
+import { Html } from '@react-three/drei'
 import { useFrame } from '@react-three/fiber'
-import { type RefObject, useEffect, useMemo, useRef } from 'react'
+import { type RefObject, useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { type Clip, clipDuration, sampleClip } from './clip'
+import type { Playback } from './playback'
 
 const PLAYER_HEIGHT = 1.8
 const PLAYER_RADIUS = 0.35
@@ -36,20 +38,39 @@ function PlayerLabel({ number }: { number: number }) {
   )
 }
 
+// Invisible, wider hit area so thin cylinders are easy to hover and tap.
+const hitMaterial = <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+
 interface ReplayProps {
   clip: Clip
-  timeLabel: RefObject<HTMLSpanElement | null>
+  playback: RefObject<Playback>
+  ball: RefObject<THREE.Mesh | null>
+  onEnded: () => void
 }
 
-export function Replay({ clip, timeLabel }: ReplayProps) {
+export function Replay({ clip, playback, ball, onEnded }: ReplayProps) {
   const duration = clipDuration(clip)
-  const time = useRef(0)
-  const ball = useRef<THREE.Mesh>(null)
   const players = useRef<Record<string, THREE.Group | null>>({})
+  const [hovered, setHovered] = useState<string | null>(null)
+  const [selected, setSelected] = useState<string | null>(null)
+  const labelled = hovered ?? selected
+
+  useEffect(() => {
+    document.body.style.cursor = hovered ? 'pointer' : ''
+  }, [hovered])
 
   useFrame((_, delta) => {
-    time.current = (time.current + delta) % duration
-    const s = sampleClip(clip, time.current)
+    const pb = playback.current
+    if (pb.playing && !pb.scrubbing) {
+      // Cap delta so returning to a background tab doesn't skip ahead.
+      pb.time += Math.min(delta, 0.1) * pb.speed
+      if (pb.time >= duration) {
+        pb.time = duration
+        pb.playing = false
+        onEnded()
+      }
+    }
+    const s = sampleClip(clip, pb.time)
 
     for (const id in s.players) {
       const g = players.current[id]
@@ -65,26 +86,41 @@ export function Replay({ clip, timeLabel }: ReplayProps) {
         ball.current.position.set(x, Math.max(z, 0) + BALL_RADIUS, -y)
       }
     }
-
-    if (timeLabel.current) {
-      timeLabel.current.textContent = `${time.current.toFixed(1)} / ${duration.toFixed(1)} s`
-    }
   })
 
   return (
-    <group>
+    // Any click that misses every player (pitch or sky) clears the selection.
+    <group onPointerMissed={() => setSelected(null)}>
       {clip.players.map((p) => (
         <group
           key={p.id}
           ref={(g) => {
             players.current[p.id] = g
           }}
+          onPointerOver={(e) => {
+            e.stopPropagation()
+            if (e.pointerType === 'mouse') setHovered(p.id)
+          }}
+          onPointerOut={() => setHovered((h) => (h === p.id ? null : h))}
+          onClick={(e) => {
+            e.stopPropagation()
+            setSelected(p.id)
+          }}
         >
           <mesh position={[0, PLAYER_HEIGHT / 2, 0]}>
             <cylinderGeometry args={[PLAYER_RADIUS, PLAYER_RADIUS, PLAYER_HEIGHT, 20]} />
             <meshStandardMaterial color={clip.teams[p.team].color} />
           </mesh>
+          <mesh position={[0, PLAYER_HEIGHT / 2 + 0.3, 0]}>
+            <cylinderGeometry args={[1, 1, PLAYER_HEIGHT + 0.6, 8]} />
+            {hitMaterial}
+          </mesh>
           <PlayerLabel number={p.number} />
+          {labelled === p.id && (
+            <Html position={[0, LABEL_Y + 1.1, 0]} center className="player-name">
+              {p.name}
+            </Html>
+          )}
         </group>
       ))}
       <mesh ref={ball}>

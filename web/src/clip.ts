@@ -51,6 +51,19 @@ export function clipDuration(clip: Clip): number {
   return clip.frames[clip.frames.length - 1].t
 }
 
+// Which goal is being attacked (+1 = the goal at x = +52.5): the half the ball
+// is in at goalT, using the nearest frame with a ball if it's missing there.
+export function attackingSide(clip: Clip): 1 | -1 {
+  const { frames, goalFrame } = clip
+  for (let d = 0; d < frames.length; d++) {
+    for (const i of [goalFrame - d, goalFrame + d]) {
+      const b = frames[i]?.b
+      if (b) return b[0] >= 0 ? 1 : -1
+    }
+  }
+  return 1
+}
+
 // Index of the last frame with frame.t <= t (clamped to the clip).
 function frameIndexAt(frames: Frame[], t: number): number {
   let lo = 0

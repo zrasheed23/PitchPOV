@@ -1,6 +1,6 @@
 # Goal Replay
 
-A static web app that replays every 2022 World Cup goal in 3D from real tracking data. Pick a player, pick a goal, and watch a ~20-second clip (15 s before the goal, 5 s after) with pause, scrub, 0.25x/0.5x/1x speed, and an orbit camera with presets. Full brief: [docs/brief.md](docs/brief.md).
+A static web app that replays every 2022 World Cup goal in 3D from real tracking data. Pick a player, pick a goal, and watch a ~21.5-second clip (15 s before the shot, 6.5 s after) with pause, scrub, 0.25x/0.5x/1x speed, and an orbit camera with presets. Full brief: [docs/brief.md](docs/brief.md).
 
 **Status:** Weekend 1 done. The Di María clip (game 10517, 35:21) is at `clips/10517_dimaria.json`.
 
@@ -33,6 +33,7 @@ Findings from game 10517 (the final):
 - Goals are shots with `possessionEvents.shotOutcomeType == "G"`. Penalty-shootout kicks are also labeled period 4, but so are real extra-time goals, so don't filter by period. A shootout kick is any goal whose `eventTime` comes after the last `gameEventType == "END"` event.
 - All 22 players are present in every frame, since PFF estimates off-camera players. Only the ball goes missing (about 7% of in-play frames).
 - Coordinates are already in meters on a 105 × 68 pitch centered at (0, 0).
+- `goalT` (the goal event's tracking frame) is the moment of the shot, not the ball crossing the line. For Di María the ball crosses about 1.3 s later, so clips run 6.5 s past `goalT` (`AFTER_S`).
 
 ## Setup
 

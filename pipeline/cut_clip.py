@@ -1,4 +1,4 @@
-"""Cut a ~20 s tracking clip around one goal and write it as compact JSON.
+"""Cut a ~21.5 s tracking clip around one goal and write it as compact JSON.
 
 Usage: python pipeline/cut_clip.py GAME_ID GAME_EVENT_ID OUT_PATH
 """
@@ -11,7 +11,7 @@ from pathlib import Path
 
 RAW = Path("data/raw")
 BEFORE_S = 15.0
-AFTER_S = 5.0
+AFTER_S = 6.5  # goalT is the shot; the ball crosses the line ~1.3 s later
 MAX_GAP_FRAMES = 15  # fill ball gaps up to ~0.5 s; longer gaps stay null
 PITCH_LENGTH = 105.0
 PITCH_WIDTH = 68.0
