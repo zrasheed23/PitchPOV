@@ -129,7 +129,25 @@ def ball_path(frames, source, length, width):
             x, y = to_standard_pitch(pos[0], pos[1], length, width)
             pos = (x, y, clamp_z(pos[2]))
         path.append(pos)
-    return path
+    return drop_repeats(path)
+
+
+def drop_repeats(path, max_run=2):
+    """PFF's ball often updates only every other frame, repeating the last position in between.
+    Played back as-is the ball moves, stops, moves, stops (a 15 Hz stutter). Blank out the
+    repeats in short runs so fill_gaps interpolates them; long runs (a ball sitting still,
+    e.g. on the penalty spot) are left alone."""
+    out = list(path)
+    i = 0
+    while i < len(out):
+        j = i + 1
+        while j < len(out) and out[j] is not None and out[i] is not None and out[j] == out[i]:
+            j += 1
+        if out[i] is not None and 1 < j - i <= max_run and j < len(out) and out[j] is not None:
+            for k in range(i + 1, j):
+                out[k] = None
+        i = j
+    return out
 
 
 def raw_ball_distance(raw_path, team_positions, goal_index):

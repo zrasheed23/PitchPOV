@@ -35,6 +35,8 @@ export default function App() {
   const [ended, setEnded] = useState(false)
   const [speed, setSpeed] = useState(1)
   const [view, setView] = useState<View>({ preset: 'broadcast', seq: 0 })
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [povId, setPovId] = useState<string | null>(null)
   const ball = useRef<THREE.Mesh>(null)
 
   // Load a goal's clip, then start it from the top with the default camera.
@@ -140,7 +142,13 @@ export default function App() {
         {clip && (
           <>
             <Replay key={clip.gameEventId} clip={clip} playback={playback} ball={ball} onEnded={onEnded} />
-            <CameraRig view={view} attackSide={attackingSide(clip)} ball={ball} onManual={onManualCamera} />
+            <CameraRig
+              view={view}
+              attackSide={attackingSide(clip)}
+              ball={ball}
+              onManual={onManualCamera}
+              onPlayerView={setPovId}
+            />
           </>
         )}
         <OrbitControls
@@ -169,8 +177,31 @@ export default function App() {
           )}
           {error ? <div className="error">{error}</div> : loading && <div className="muted">Loading…</div>}
         </div>
-        {index.length > 0 && <GoalPicker index={index} current={goal} onPick={loadGoal} />}
+        {index.length > 0 && (
+          <button type="button" className="toggle-picker" onClick={() => setPickerOpen((o) => !o)}>
+            {pickerOpen ? 'Close' : 'Change goal'}
+          </button>
+        )}
+        {index.length > 0 && (
+          // Hidden rather than unmounted, so search and the review filter survive closing.
+          <div className="picker-wrap" hidden={!pickerOpen}>
+            <GoalPicker
+              index={index}
+              current={goal}
+              onPick={(g) => {
+                setPickerOpen(false)
+                loadGoal(g)
+              }}
+            />
+          </div>
+        )}
       </div>
+
+      {povId && clip && (
+        <div className="pov-note">
+          Player view: {clip.players.find((p) => p.id === povId)?.name ?? 'player'} · drag or pick a camera to exit
+        </div>
+      )}
 
       <div className="presets" role="group" aria-label="Camera">
         {PRESETS.map((p) => (

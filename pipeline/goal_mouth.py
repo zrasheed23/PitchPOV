@@ -14,8 +14,13 @@ short of it. For the post-shot path:
   jumps. Then carry the ball ~2 m into the net, slowing to a stop, and leave it
   resting on the ground there for the rest of the clip.
 - Never crosses: if the ball vanishes within 5 m of the goal mouth, carry it
-  straight in from there, then into the net. Otherwise leave the path alone and
-  flag the clip for review; no long invented flights.
+  straight in from there, then into the net.
+- Never gets near the goal (mostly headers, where tracking loses the ball the
+  moment it leaves the head): replace the post-shot path with a straight shot
+  from the ball at the shot into the goal at SHOT_SPEED, aimed along the
+  ball's first ~0.25 s of travel when that points at the goal, else at the
+  nearest point of the goal mouth. Reported as "synthesized" so it can be
+  checked by eye.
 """
 
 import math
@@ -31,6 +36,11 @@ MAX_CARRY_M = 5.0  # only carry a vanished ball in from this close to the goal m
 CLEARANCE_NEAR_M = 1.5  # a ball this close to the line, then moving away, was cleared
 CLEARANCE_RETREAT_M = 1.0  # how far back from its closest point counts as moving away
 CLEARANCE_BLEND_S = 0.5  # blend the clearance shift in and out over this long
+SHOT_SPEED = 20.0  # m/s for a synthesized shot
+AIM_LOOKAHEAD_S = 0.25  # how much of the real post-shot path sets the aim
+HEADER_MAX_Z = 2.3  # a ball higher than this at the shot can't be touching the scorer
+HEADER_Z = 1.7  # ball height at a header (the viewer's players are 1.8 m tall)
+HEADER_BLEND_S = 0.6  # lower the incoming ball to head height over this long
 
 
 def goal_side(ball, goal_index):
@@ -143,7 +153,7 @@ def correct_goal_mouth(ball, times, goal_index):
 
     info: {"corrected": bool,
            "reason": None | "wide" | "high" | "clearance" | "short"
-                     | "not near goal" | "no ball",
+                     | "synthesized" | "no ball",
            "shift": metres the crossing (or clearance) point moved,
            "carried": metres of path invented after the ball vanished,
            "needs_review": True when the path was left alone and won't go in}.
@@ -169,8 +179,9 @@ def correct_goal_mouth(ball, times, goal_index):
     if crossing is None:
         j = max(i for i in range(start, len(ball)) if ball[i] is not None)
         if j == len(ball) - 1 or goal_mouth_distance(ball[j], side) > MAX_CARRY_M:
-            info["reason"] = "not near goal"
-            info["needs_review"] = True
+            k, t_cross, point = _synthesize_shot(ball, times, start, side)
+            info.update(corrected=True, reason="synthesized", carried=math.dist(ball[start], point))
+            _into_net(ball, times, k, t_cross, point, side)
             return ball, info
         k, t_cross, point = _carry_in(ball, times, j, side)
         info.update(corrected=True, reason="short", carried=math.dist(ball[j], point))
@@ -229,3 +240,41 @@ def _into_net(ball, times, k, t_cross, point, side):
         w = min((times[i] - t_cross) / duration, 1.0) if duration > 0 else 1.0
         w = 1 - (1 - max(w, 0.0)) ** 2
         ball[i] = _lerp(point, rest, w)
+
+
+def _synthesize_shot(ball, times, start, side):
+    """Overwrite the path after `start` with a straight shot into the goal at
+    SHOT_SPEED. Returns the same tuple as _find_crossing."""
+    max_y = POST_Y - MARGIN
+    x0, y0, z0 = ball[start]
+    if z0 > HEADER_MAX_Z:
+        # PFF's smoothed ball follows the scorer in x/y but can keep the cross's height
+        # (4+ m at Gakpo's header). Bring it down to his head, easing in over the last
+        # HEADER_BLEND_S so the incoming cross meets him instead of passing overhead.
+        dz = HEADER_Z - z0
+        for i in range(start, -1, -1):
+            if times[start] - times[i] > HEADER_BLEND_S:
+                break
+            if ball[i] is not None:
+                w = 1 - (times[start] - times[i]) / HEADER_BLEND_S
+                x, y, z = ball[i]
+                ball[i] = (x, y, max(z + dz * w, 0.0))
+        z0 = HEADER_Z
+    gx = side * GOAL_LINE_X
+    aim_y = min(max(y0, -max_y), max_y)  # default: nearest point of the goal mouth
+    later = next((i for i in range(start + 1, len(ball))
+                  if ball[i] is not None and times[i] - times[start] >= AIM_LOOKAHEAD_S), None)
+    if later is not None:
+        dx, dy = ball[later][0] - x0, ball[later][1] - y0
+        if dx * side > 0.3:  # moving toward the goal: follow that direction to the line
+            y_line = y0 + dy * (gx - x0) / dx
+            if abs(y_line) <= POST_Y + 2.0:  # roughly on target; keep the aim, just inside the posts
+                aim_y = min(max(y_line, -max_y), max_y)
+    target = (gx, aim_y, min(max(z0, 0.3), BAR_Z - MARGIN))
+    t_cross = times[start] + math.dist(ball[start], target) / SHOT_SPEED
+    k = start + 1
+    while k < len(ball) and times[k] < t_cross:
+        w = (times[k] - times[start]) / (t_cross - times[start])
+        ball[k] = _lerp(ball[start], target, w)
+        k += 1
+    return k, t_cross, target

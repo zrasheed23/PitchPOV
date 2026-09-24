@@ -105,3 +105,16 @@ def test_load_overrides_checks_entries(tmp_path):
 
 def test_checked_in_overrides_are_valid():
     assert load_overrides(OVERRIDES)["10517_6738451.json"]["ballSource"] == "smoothed"
+
+
+def test_drop_repeats_blanks_every_other_frame_stutter():
+    from cut_clip import drop_repeats
+    a, b, c = (1.0, 0.0, 0.0), (2.0, 0.0, 0.0), (3.0, 0.0, 0.0)
+    assert drop_repeats([a, a, b, b, c]) == [a, None, b, None, c]
+
+
+def test_drop_repeats_keeps_a_ball_at_rest():
+    from cut_clip import drop_repeats
+    spot, kicked = (41.5, 0.0, 0.0), (43.0, 0.5, 0.2)
+    path = [spot] * 30 + [kicked]
+    assert drop_repeats(path) == path

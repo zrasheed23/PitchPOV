@@ -96,6 +96,8 @@ export function Replay({ clip, playback, ball, onEnded }: ReplayProps) {
       {clip.players.map((p) => (
         <group
           key={p.id}
+          name={`player-${p.id}`}
+          userData={{ playerId: p.id }}
           ref={(g) => {
             players.current[p.id] = g
           }}

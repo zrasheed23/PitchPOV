@@ -72,11 +72,17 @@ def process_game(game_id, overrides):
 
 
 def review_reasons(stats):
-    """Why a clip needs a look by eye (empty if it doesn't)."""
+    """Why a clip needs a look by eye (empty if it doesn't).
+
+    A clip marked "reviewed": true in overrides.json stays off the list unless its ball still doesn't go in."""
     c = stats["correction"]
     reasons = []
     if c["needs_review"]:
         reasons.append(f"ball doesn't go in ({c['reason']})")
+    if (stats.get("override") or {}).get("reviewed"):
+        return reasons
+    if c["reason"] == "synthesized":
+        reasons.append(f"shot path synthesized ({c['carried']:.1f} m)")
     if c["shift"] > BIG_SHIFT_M:
         reasons.append(f"{c['reason']} correction shifted {c['shift']:.1f} m")
     d = stats["raw_distance"]

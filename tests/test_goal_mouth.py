@@ -83,19 +83,23 @@ def test_ball_that_vanishes_near_goal_is_carried_in():
     assert_rests_in_net(out)
 
 
-def test_ball_that_vanishes_far_from_goal_is_left_for_review():
+def test_ball_that_vanishes_far_from_goal_gets_a_synthesized_shot():
     ball, times = path((52.5, 0.0, 0.3), vanish_at=GOAL + 10)  # vanishes ~8 m out
     out, info = correct_goal_mouth(ball, times, GOAL)
-    assert info["needs_review"] is True and info["corrected"] is False
-    assert info["reason"] == "not near goal"
-    assert out == ball  # no invented flight
+    assert info["reason"] == "synthesized" and info["corrected"] and not info["needs_review"]
+    assert out[: GOAL + 1] == ball[: GOAL + 1]
+    # Aimed along the real direction (straight at the centre of the goal here).
+    assert abs(crossing_point(out)[1]) < 0.5
+    assert_rests_in_net(out)
 
 
-def test_ball_tracked_to_the_end_but_never_near_goal_is_left_for_review():
+def test_ball_tracked_to_the_end_but_never_near_goal_gets_a_synthesized_shot():
     ball, times = path((20.0, 10.0, 0.0), side=1)  # heads back upfield
     out, info = correct_goal_mouth(ball, times, GOAL)
-    assert info["needs_review"] is True
-    assert out == ball
+    assert info["reason"] == "synthesized" and not info["needs_review"]
+    # The real direction points away from goal, so it aims at the nearest point of the goal mouth.
+    assert abs(crossing_point(out)[1]) <= POST_Y - MARGIN + 1e-9
+    assert_rests_in_net(out)
 
 
 def clearance(closest_x, y=1.0, n=150):
@@ -132,7 +136,7 @@ def test_goal_line_clearance_is_pulled_just_over_the_line_and_kept():
 def test_ball_that_stops_short_and_is_cleared_from_far_out_is_not_a_clearance():
     ball, times = clearance(49.0)  # 3.5 m short: not a goal-line clearance
     _, info = correct_goal_mouth(ball, times, GOAL)
-    assert info["reason"] == "not near goal" and info["needs_review"]
+    assert info["reason"] == "synthesized"
 
 
 def test_goal_mouth_distance():
@@ -147,3 +151,16 @@ def test_goal_at_the_negative_end():
     assert info["reason"] == "wide"
     assert crossing_point(out, side=-1)[1] == pytest.approx(POST_Y - MARGIN)
     assert_rests_in_net(out, side=-1)
+
+
+def test_synthesized_header_brings_a_high_ball_down_to_head_height():
+    from goal_mouth import HEADER_Z
+    times = [i / FPS for i in range(150)]
+    # A cross still 4.4 m up at the header, then lost: the smoothed-ball pattern at Gakpo 84'.
+    ball = [(30 + i * 0.3, 0.0, 4.4) for i in range(GOAL + 1)] + [(39.0, 0.0, 4.4)] * 10 + [None] * 109
+    out, info = correct_goal_mouth(ball, times, GOAL)
+    assert info["reason"] == "synthesized"
+    assert out[GOAL][2] == pytest.approx(HEADER_Z)
+    # Eased down over the frames before the header, not snapped.
+    assert out[GOAL - 5][2] > HEADER_Z and out[GOAL - 30][2] == pytest.approx(4.4)
+    assert_rests_in_net(out)

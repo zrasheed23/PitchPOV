@@ -6,11 +6,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "pipeline"))
 from build_all import review_reasons
 
 
-def stats(source="raw", distance=2.0, needs_review=False, reason=None, shift=0.0):
+def stats(source="raw", distance=2.0, needs_review=False, reason=None, shift=0.0, carried=0.0):
     return {
         "ball_source": source,
         "raw_distance": distance,
-        "correction": {"needs_review": needs_review, "reason": reason, "shift": shift},
+        "correction": {"needs_review": needs_review, "reason": reason, "shift": shift, "carried": carried},
     }
 
 
@@ -25,3 +25,4 @@ def test_review_reasons():
     assert review_reasons(stats(reason="wide", shift=12.9)) == ["wide correction shifted 12.9 m"]
     assert review_reasons(stats(distance=7.7)) == ["raw ball 7.7 m from the scoring team"]
     assert len(review_reasons(stats(distance=6.0, needs_review=True, reason="not near goal"))) == 2
+    assert review_reasons(stats(reason="synthesized", carried=9.5)) == ["shot path synthesized (9.5 m)"]

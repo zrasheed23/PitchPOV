@@ -14,9 +14,9 @@ body,
   display: flex;
   flex-direction: column;
   gap: 8px;
-  width: 300px;
+  width: 260px;
   max-width: calc(100% - 24px);
-  max-height: calc(100% - 110px);
+  max-height: 45vh;
   padding: 8px 12px;
   box-sizing: border-box;
   border-radius: 6px;
@@ -44,7 +44,25 @@ body,
   vertical-align: 1px;
 }
 
+.picker-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.picker-wrap[hidden] {
+  display: none;
+}
+
+.toggle-picker {
+  align-self: flex-start;
+  font-size: 12px;
+}
+
 .picker {
+  flex: 1;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -247,4 +265,16 @@ button[aria-pressed='true'] {
   white-space: nowrap;
   pointer-events: none;
   user-select: none;
+}
+
+.pov-note {
+  position: fixed;
+  top: 52px;
+  right: 12px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font: 12px/1.4 system-ui, sans-serif;
+  pointer-events: none;
 }
