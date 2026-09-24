@@ -42,8 +42,10 @@ def test_read_windows_cuts_several_goals_in_one_pass(tmp_path):
         for i in range(200):
             eid = {50: 111, 120: 222}.get(i)
             f.write(json.dumps({"frameNum": i, "videoTimeMs": i * 100, "game_event_id": eid}) + "\n")
-    windows = read_windows(path, [111, 222, 333], before_s=3, after_s=2)
+    periods = set()
+    windows = read_windows(path, [111, 222, 333], before_s=3, after_s=2, periods=periods)
     assert set(windows) == {111, 222}
+    assert periods == {None}  # these frames carry no period
 
     frames, goal_index = windows[111]
     assert frames[goal_index]["frameNum"] == 50
@@ -93,7 +95,9 @@ def test_load_overrides_checks_entries(tmp_path):
     path = tmp_path / "overrides.json"
     path.write_text(json.dumps({"1_2.json": {"ballSource": "smoothed", "note": "why"}}))
     assert load_overrides(path)["1_2.json"]["ballSource"] == "smoothed"
-    for bad in ({"ballSource": "balls", "note": "why"}, {"ballSource": "raw"}):
+    path.write_text(json.dumps({"1_3.json": {"exclude": True, "note": "not a goal"}}))
+    assert load_overrides(path)["1_3.json"]["exclude"] is True
+    for bad in ({"ballSource": "balls", "note": "why"}, {"ballSource": "raw"}, {"exclude": True}):
         path.write_text(json.dumps({"1_2.json": bad}))
         with pytest.raises(ValueError):
             load_overrides(path)

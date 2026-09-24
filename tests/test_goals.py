@@ -54,7 +54,7 @@ def end(eid, t, period):
 
 def test_goal_shot_is_found():
     events = [goal_shot(1, 100), marker(2, 101, "home"), kickoff(3, 150, "away"), end(4, 3000, 2)]
-    goals, problems = find_goals(events)
+    goals, problems, _ = find_goals(events)
     assert [g["gameEventId"] for g in goals] == [1]
     assert goals[0]["scorer"] == "Home Striker"
     assert goals[0]["ownGoal"] is False
@@ -76,7 +76,7 @@ def test_shootout_kicks_are_excluded_but_extra_time_and_penalties_kept():
         goal_shot(10, 7900, side="away", player=AWAY_PLAYER, period=4, setpiece="P"),
         marker(11, 7901, "away"),
     ]
-    goals, _ = find_goals(events)
+    goals, _, _ = find_goals(events)
     assert [g["gameEventId"] for g in goals] == [1, 4]
 
 
@@ -88,7 +88,7 @@ def test_own_goal_is_credited_to_the_defender():
         kickoff(4, 250, "away"),
         end(5, 3000, 2),
     ]
-    goals, problems = find_goals(events)
+    goals, problems, _ = find_goals(events)
     assert len(goals) == 1
     g = goals[0]
     assert g["gameEventId"] == 2
@@ -106,7 +106,7 @@ def test_own_goal_logged_as_a_goal_shot():
         kickoff(3, 250, "away"),
         end(4, 3000, 2),
     ]
-    goals, problems = find_goals(events)
+    goals, problems, _ = find_goals(events)
     assert len(goals) == 1
     assert goals[0]["ownGoal"] is True and goals[0]["forSide"] == "home"
     assert problems == []
@@ -120,16 +120,30 @@ def test_marker_without_kickoff_is_not_a_goal():
         ev(3, 260, side="away", player=AWAY_PLAYER, setpiece="F"),
         end(4, 3000, 2),
     ]
-    goals, problems = find_goals(events)
+    goals, problems, _ = find_goals(events)
     assert goals == []
     assert len(problems) == 1
 
 
-def test_goal_shot_without_marker_is_kept_and_reported():
-    events = [goal_shot(1, 100), kickoff(2, 150, "away"), end(3, 3000, 2)]
-    goals, problems = find_goals(events)
-    assert [g["gameEventId"] for g in goals] == [1]
-    assert len(problems) == 1
+def test_goal_shot_without_marker_is_disallowed():
+    # VAR/offside: PFF logs the shot as a goal but writes no OUT goal marker.
+    events = [goal_shot(1, 100), ev(2, 150, side="away", setpiece="F"),
+              goal_shot(3, 400), marker(4, 401, "home"), kickoff(5, 450, "away"), end(6, 3000, 2)]
+    goals, problems, disallowed = find_goals(events)
+    assert [g["gameEventId"] for g in goals] == [3]
+    assert [g["gameEventId"] for g in disallowed] == [1]
+    assert disallowed[0]["scorer"] == "Home Striker"
+    assert problems == []
+
+
+def test_cross_that_goes_in_is_credited_to_the_player_on_the_ball():
+    # Like Bruno Fernandes v Uruguay: shotOutcomeType G on a cross, no shooter.
+    shot = goal_shot(1, 100)
+    shot["possessionEvents"]["shooterPlayerId"] = None
+    shot["possessionEvents"]["shooterPlayerName"] = None
+    goals, _, _ = find_goals([shot, marker(2, 101, "home"), kickoff(3, 150, "away"), end(4, 3000, 2)])
+    assert goals[0]["scorer"] == "Home Striker"
+    assert goals[0]["scorerId"] == str(HOME_PLAYER[0])
 
 
 def test_minute_label():

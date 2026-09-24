@@ -20,6 +20,7 @@ from goals import build_index, clip_name, find_goals
 CLIPS = Path("clips")
 EXPECTED_GOALS = 172  # 2022 World Cup goals, excluding shootouts
 BIG_SHIFT_M = 3.0
+REVIEW_RAW_M = 6.0  # raw source chosen this close to RAW_BALL_MAX_M: worth a look
 
 
 def game_ids():
@@ -35,30 +36,61 @@ def game_ids():
 
 
 def process_game(game_id, overrides):
-    """Cut every goal in one match (one pass over its tracking file)."""
+    """Cut every goal in one match (one pass over its tracking file).
+
+    Returns (meta, goals, results, problems, skipped); skipped lists
+    (goal, kind, reason) for disallowed, excluded and no-tracking goals.
+    """
     meta, roster, events = load_match(game_id)
-    goals, problems = find_goals(events)
-    windows = read_windows(RAW / "tracking" / f"{game_id}.jsonl.bz2", [g["gameEventId"] for g in goals])
-    results = []
+    goals, problems, disallowed = find_goals(events)
+    skipped = [(g, "disallowed", "goal shot with no OUT goal marker") for g in disallowed]
+    to_cut = []
     for goal in goals:
+        override = overrides.get(clip_name(goal)) or {}
+        if override.get("exclude"):
+            skipped.append((goal, "excluded", override["note"]))
+        else:
+            to_cut.append(goal)
+    periods = set()
+    windows = read_windows(RAW / "tracking" / f"{game_id}.jsonl.bz2", [g["gameEventId"] for g in to_cut],
+                           periods=periods)
+    results = []
+    for goal in to_cut:
         if goal["gameEventId"] not in windows:
-            problems.append(f"game {game_id}: goal {goal['gameEventId']} ({goal['scorer']}) "
-                            "not found in tracking, no clip")
+            last = max((p for p in periods if p is not None), default=None)
+            if last is not None and goal["period"] > last:
+                reason = f"tracking ends in period {last}, goal is in period {goal['period']}"
+            else:
+                reason = "game_event_id is on no tracking frame"
+            skipped.append((goal, "no tracking", reason))
             continue
         frames, goal_index = windows[goal["gameEventId"]]
         clip, stats = build_clip(meta, roster, goal, frames, goal_index, overrides.get(clip_name(goal)))
         write_clip(clip, CLIPS / clip_name(goal))
         results.append((goal, stats))
-    return meta, goals, results, problems
+    return meta, goals, results, problems, skipped
 
 
-def report(matches, results, problems, n_games):
+def review_reasons(stats):
+    """Why a clip needs a look by eye (empty if it doesn't)."""
+    c = stats["correction"]
+    reasons = []
+    if c["needs_review"]:
+        reasons.append(f"ball doesn't go in ({c['reason']})")
+    if c["shift"] > BIG_SHIFT_M:
+        reasons.append(f"{c['reason']} correction shifted {c['shift']:.1f} m")
+    d = stats["raw_distance"]
+    if stats["ball_source"] == "raw" and d is not None and REVIEW_RAW_M <= d <= RAW_BALL_MAX_M:
+        reasons.append(f"raw ball {d:.1f} m from the scoring team")
+    return reasons
+
+
+def report(matches, results, problems, skipped, n_games):
     goals = [g for _, gs in matches for g in gs]
     stats = [s for _, s in results]
     print("\n=== Validation report ===")
     print(f"matches processed: {n_games} (64 in the tournament)")
     weeks = Counter(m.get("week") for m, _ in matches)
-    # Expected 16/16/16/8/4/2/1/1 if PFF's week is the round (index "stage" relies on it).
     print("matches per PFF week: " + ", ".join(f"{w}: {n}" for w, n in sorted(weeks.items())))
     own = [g for g in goals if g["ownGoal"]]
     print(f"goals found: {len(goals)} ({len(own)} own goals); expected {EXPECTED_GOALS} for the full tournament")
@@ -66,9 +98,18 @@ def report(matches, results, problems, n_games):
         print(f"  -> only {n_games} of 64 matches are in data/raw/, so the total can't match yet")
     elif len(goals) != EXPECTED_GOALS:
         print(f"  -> {len(goals) - EXPECTED_GOALS:+d} vs expected: see problems below")
+    else:
+        print("  -> matches")
     for g in own:
         print(f"  own goal: {g['scorer']} (game {g['gameId']}, {g['clock']})")
     print(f"clips written: {len(results)}")
+    for kind in ("disallowed", "no tracking", "excluded"):
+        rows = [(g, reason) for g, k, reason in skipped if k == kind]
+        label = {"disallowed": "disallowed (excluded)", "no tracking": "no tracking (no clip)",
+                 "excluded": f"excluded in {OVERRIDES.name}"}[kind]
+        print(f"{label}: {len(rows)}")
+        for g, reason in rows:
+            print(f"  {clip_name(g)}  {g['scorer']} {g['clock']} (period {g['period']})  {reason}")
 
     if stats:
         n_frames = [s["frames"] for s in stats]
@@ -113,10 +154,11 @@ def report(matches, results, problems, n_games):
             print(f"ball carried in after it vanished near goal: {len(carried)}")
             for g, c in sorted(carried, key=lambda gc: -gc[1]["carried"]):
                 print(f"  {clip_name(g)}  {g['scorer']} {g['clock']}  {c['carried']:.1f} m")
-        review = [(g, s["correction"]) for g, s in results if s["correction"]["needs_review"]]
-        print(f"needsReview (ball left as is, doesn't go in): {len(review)}")
-        for g, c in review:
-            print(f"  {clip_name(g)}  {g['scorer']} {g['clock']}  {c['reason']}")
+        review = [(g, review_reasons(s)) for g, s in results if review_reasons(s)]
+        print(f"review list (needsReview, shift > {BIG_SHIFT_M:.0f} m, or raw at "
+              f"{REVIEW_RAW_M:.0f}-{RAW_BALL_MAX_M:.0f} m): {len(review)}")
+        for g, reasons in review:
+            print(f"  {clip_name(g)}  {g['scorer']} {g['clock']}  {'; '.join(reasons)}")
 
     print(f"problems: {len(problems)}")
     for p in problems:
@@ -131,28 +173,37 @@ def main():
     ids = game_ids()
     overrides = load_overrides()
     print(f"{len(ids)} matches in {RAW}")
-    matches, results, problems = [], [], []
+    matches, results, problems, skipped = [], [], [], []
     with ProcessPoolExecutor(max_workers=min(args.jobs, len(ids) or 1)) as pool:
         per_game = pool.map(process_game, ids, [overrides] * len(ids))
-        for game_id, (meta, goals, game_results, game_problems) in zip(ids, per_game):
+        for game_id, (meta, goals, game_results, game_problems, game_skipped) in zip(ids, per_game):
             print(f"  {game_id} {meta['homeTeam']['shortName']} v {meta['awayTeam']['shortName']}: "
                   f"{len(goals)} goals")
             matches.append((meta, goals))
             results.extend(game_results)
             problems.extend(game_problems)
+            skipped.extend(game_skipped)
 
-    names = {clip_name(g) for g, _ in results}
+    names = {clip_name(g) for _, gs in matches for g in gs}
     loaded = set(ids)
     for name in overrides:
         if name not in names and name.split("_")[0] in loaded:
-            problems.append(f"{OVERRIDES.name}: {name} matches no clip")
+            problems.append(f"{OVERRIDES.name}: {name} matches no goal")
 
-    # Only list goals that got a clip.
-    written = {r[0]["gameEventId"] for r in results}
-    index = [e for e in build_index(matches) if e["gameEventId"] in written]
+    # Only list goals that got a clip. Excluded and no-tracking goals still
+    # count toward the running score.
+    reviews = {g["gameEventId"]: review_reasons(s) for g, s in results}
+    index = [e for e in build_index(matches) if e["gameEventId"] in reviews]
+    for e in index:
+        e["review"] = reviews[e["gameEventId"]]
     write_clip(index, CLIPS / "index.json")
     print(f"wrote {CLIPS / 'index.json'} ({len(index)} goals)")
-    report(matches, results, problems, len(ids))
+    keep = {e["clip"] for e in index} | {"index.json"}
+    stale = sorted(p for p in CLIPS.glob("*.json") if p.name not in keep)
+    for p in stale:
+        p.unlink()
+    print(f"deleted {len(stale)} clip files not in the index" + (": " + ", ".join(p.name for p in stale) if stale else ""))
+    report(matches, results, problems, skipped, len(ids))
 
 
 if __name__ == "__main__":

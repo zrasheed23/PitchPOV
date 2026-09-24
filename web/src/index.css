@@ -65,6 +65,26 @@ body,
   padding: 6px 8px;
 }
 
+.picker-bar {
+  display: flex;
+  gap: 6px;
+}
+
+.picker-bar .search {
+  flex: 1;
+  min-width: 0;
+}
+
+.review-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: #ffcc33;
+  vertical-align: 1px;
+}
+
 .search::placeholder {
   color: rgba(255, 255, 255, 0.5);
 }

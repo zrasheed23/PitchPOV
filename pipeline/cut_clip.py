@@ -30,10 +30,12 @@ def load_json(path):
         return json.load(f)
 
 
-def read_windows(tracking_path, game_event_ids, before_s=BEFORE_S, after_s=AFTER_S):
+def read_windows(tracking_path, game_event_ids, before_s=BEFORE_S, after_s=AFTER_S, periods=None):
     """Cut the window around every event in one pass over the tracking file.
 
     Returns {game_event_id: (frames, goal_index)}; ids never seen are missing.
+    If given, the set `periods` collects every period seen in the file (only
+    complete when some id is missing, since the pass then reads to the end).
     """
     wanted = set(game_event_ids)
     buffer = deque()
@@ -42,6 +44,8 @@ def read_windows(tracking_path, game_event_ids, before_s=BEFORE_S, after_s=AFTER
     with bz2.open(tracking_path, "rt") as f:
         for line in f:
             frame = json.loads(line)
+            if periods is not None:
+                periods.add(frame.get("period"))
             if frame.get("videoTimeMs") is None:
                 continue
             t = frame["videoTimeMs"] / 1000
@@ -145,20 +149,23 @@ def choose_ball_source(raw_distance):
 
 
 def load_overrides(path=OVERRIDES):
-    """Hand-picked ball sources: {clip file name: {"ballSource", "note"}}."""
+    """Hand fixes: {clip file name: {"ballSource": "smoothed" | "raw", "note": ...}},
+    or {"exclude": true, "note": ...} to leave a goal out of the clips and index."""
     if not path.exists():
         return {}
     overrides = load_json(path)
     for name, o in overrides.items():
-        if o.get("ballSource") not in BALL_SOURCES or not o.get("note"):
-            raise ValueError(f"{path}: {name} needs a ballSource in {BALL_SOURCES} and a note")
+        if not o.get("note"):
+            raise ValueError(f"{path}: {name} needs a note")
+        if o.get("exclude") is not True and o.get("ballSource") not in BALL_SOURCES:
+            raise ValueError(f"{path}: {name} needs a ballSource in {BALL_SOURCES} or \"exclude\": true")
     return overrides
 
 
 def pick_ball_source(raw_distance, override=None):
-    """(source, automatic choice): an override wins over choose_ball_source."""
+    """(source, automatic choice): an override's ballSource wins over choose_ball_source."""
     auto = choose_ball_source(raw_distance)
-    return (override["ballSource"] if override else auto), auto
+    return (override or {}).get("ballSource", auto), auto
 
 
 def load_match(game_id):
@@ -268,7 +275,7 @@ def write_clip(clip, out_path):
 def main():
     game_id, game_event_id, out_path = sys.argv[1], int(sys.argv[2]), Path(sys.argv[3])
     meta, roster, events = load_match(game_id)
-    goals, _ = find_goals(events)
+    goals, _, _ = find_goals(events)
     goal = next((g for g in goals if g["gameEventId"] == game_event_id), None)
     if goal is None:
         sys.exit(f"{game_event_id} is not a goal in game {game_id}")

@@ -17,6 +17,7 @@ export interface GoalEntry {
   minute: string // e.g. "36'" or "45+2'"
   score: { home: number; away: number; homeShort: string; awayShort: string } // right after the goal
   ownGoal: boolean
+  review: string[] // why the pipeline thinks this clip needs a look; empty if fine
 }
 
 export interface Scorer {

@@ -3,7 +3,8 @@
 Goals are shots with shotOutcomeType == "G". PFF also writes an OUT event with
 outType "H"/"A" (a goal for the home/away team) after every goal; an OUT marker
 with no matching goal shot, followed by the conceding team's kickoff, is an own
-goal, credited to the conceding team's last player on the ball.
+goal, credited to the conceding team's last player on the ball. A goal shot
+with no OUT marker is a disallowed goal (VAR/offside) and is left out.
 Shootout kicks (anything after the last END event) are left out.
 """
 
@@ -15,7 +16,8 @@ OTHER_SIDE = {"home": "away", "away": "home"}
 # Period -> the minute its regular time ends, for stoppage labels like 45+2'.
 PERIOD_END_MINUTE = {1: 45, 2: 90, 3: 105, 4: 120}
 
-# PFF's "week" is the round of the tournament. Weeks 1–3 are group matchdays.
+# PFF's "week" is the round of the tournament (confirmed by the match counts,
+# 16/16/16/8/4/2/1/1). Weeks 1–3 are group matchdays.
 STAGES = {4: "Round of 16", 5: "Quarter-final", 6: "Semi-final", 7: "Third place", 8: "Final"}
 
 
@@ -49,10 +51,11 @@ def _goal(event, scorer_id, scorer_name, side, own_goal):
 
 
 def find_goals(events):
-    """Return (goals, problems) for one match, in match order.
+    """Return (goals, problems, disallowed) for one match, each in match order.
 
-    problems lists anything that needs a look by eye: goal shots with no OUT
-    marker, and OUT markers that are neither a shot nor a clear own goal.
+    disallowed holds goal shots with no OUT goal marker (VAR/offside), in the
+    same shape as goals. problems lists OUT markers that are neither a goal
+    shot nor a clear own goal.
     """
     events = sorted(events, key=lambda e: e["eventTime"])
     ends = [e["eventTime"] for e in events if e["gameEvents"]["gameEventType"] == "END"]
@@ -104,17 +107,19 @@ def find_goals(events):
         ge_t = toucher["gameEvents"]
         goals.append(_goal(toucher, ge_t["playerId"], ge_t["playerName"], conceding, own_goal=True))
 
+    disallowed = []
     for s in in_game:
         pe = s.get("possessionEvents") or {}
         if pe.get("shotOutcomeType") != "G" or s["gameEventId"] in own_goal_shots:
             continue
-        if s["gameEventId"] not in claimed:
-            problems.append(f"game {s['gameId']}: goal shot {s['gameEventId']} "
-                            f"({pe['shooterPlayerName']}) has no OUT goal marker, kept")
-        goals.append(_goal(s, pe["shooterPlayerId"], pe["shooterPlayerName"], _side(s), own_goal=False))
+        # A cross that goes straight in has no shooter: use the player on the ball.
+        scorer_id = pe.get("shooterPlayerId") or s["gameEvents"].get("playerId")
+        scorer_name = pe.get("shooterPlayerName") or s["gameEvents"].get("playerName")
+        goal = _goal(s, scorer_id, scorer_name, _side(s), own_goal=False)
+        (goals if s["gameEventId"] in claimed else disallowed).append(goal)
 
     goals.sort(key=lambda g: g["eventTime"])
-    return goals, problems
+    return goals, problems, disallowed
 
 
 def minute_label(period, game_clock_s):
