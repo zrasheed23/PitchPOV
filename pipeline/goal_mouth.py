@@ -1,16 +1,21 @@
 """Goal-mouth correction: make the ball actually go in.
 
-PFF usually loses the ball just after a shot, and ballsSmoothed then carries
-it on in a straight line from the shooter, which can cross the goal line
-outside the posts (Di María's goes ~1 m wide) before the ball disappears.
-
-For the post-shot path:
-- Find where it crosses the goal line. If that's wide of a post, over the bar,
-  or the ball never gets there, shift the path so it crosses 0.3 m inside the
-  nearest post and under the bar. The shift ramps linearly from 0 at the shot
-  to the full amount at the crossing, so nothing jumps.
-- After the crossing, carry the ball ~2 m into the net, slowing to a stop, and
-  leave it resting on the ground there for the rest of the clip.
+PFF usually loses the ball just after a shot, and its path can then cross the
+goal line outside the posts (Di María's smoothed ball goes ~1 m wide) or stop
+short of it. For the post-shot path:
+- Goal-line clearance: the ball comes within 1.5 m of the line between the
+  posts, then moves away before it crosses (Messi 108', cleared by Koundé from
+  behind the line). Shift the path locally so its closest point is 0.3 m over
+  the line, blending back to the real path over ~0.5 s each side. The clearance
+  stays; the ball is not carried into the net.
+- Crosses the line: if wide of a post or over the bar, shift the path so it
+  crosses 0.3 m inside the nearest post and under the bar. The shift ramps
+  linearly from 0 at the shot to the full amount at the crossing, so nothing
+  jumps. Then carry the ball ~2 m into the net, slowing to a stop, and leave it
+  resting on the ground there for the rest of the clip.
+- Never crosses: if the ball vanishes within 5 m of the goal mouth, carry it
+  straight in from there, then into the net. Otherwise leave the path alone and
+  flag the clip for review; no long invented flights.
 """
 
 import math
@@ -21,8 +26,11 @@ BAR_Z = 2.44
 MARGIN = 0.3
 NET_DEPTH = 2.0
 MIN_NET_SPEED = 4.0  # m/s; floor for the speed the ball enters the net at
-EXTRAPOLATE_SPEED = 15.0  # m/s toward goal when the ball vanishes at the shot
-VELOCITY_WINDOW = 5  # frames used to estimate the ball's velocity
+CARRY_SPEED = 15.0  # m/s when carrying a vanished ball into the goal
+MAX_CARRY_M = 5.0  # only carry a vanished ball in from this close to the goal mouth
+CLEARANCE_NEAR_M = 1.5  # a ball this close to the line, then moving away, was cleared
+CLEARANCE_RETREAT_M = 1.0  # how far back from its closest point counts as moving away
+CLEARANCE_BLEND_S = 0.5  # blend the clearance shift in and out over this long
 
 
 def goal_side(ball, goal_index):
@@ -68,65 +76,112 @@ def _fill(ball, times, j, k):
         ball[i] = _lerp(ball[j], ball[k], w)
 
 
-def _extrapolate(ball, times, start, side):
-    """Carry the ball on in a straight line from its last known point until it
-    reaches the goal line. Returns the same tuple as _find_crossing."""
-    j = max(i for i in range(start, len(ball)) if ball[i] is not None)
-    i0 = max(start, j - VELOCITY_WINDOW)
-    v = None
-    if j > i0 and times[j] > times[i0]:
-        dt = times[j] - times[i0]
-        v = tuple((b - a) / dt for a, b in zip(ball[i0], ball[j]))
-    if v is None or side * v[0] < 2.0:
-        # No usable velocity (or it points away from goal): head for the goal.
-        dx, dy = side * GOAL_LINE_X - ball[j][0], -ball[j][1]
-        d = math.hypot(dx, dy) or 1.0
-        v = (dx / d * EXTRAPOLATE_SPEED, dy / d * EXTRAPOLATE_SPEED, 0.0)
+def goal_mouth_distance(point, side):
+    """Distance from a ball (x, y, z) to the nearest point of the goal mouth."""
+    mouth = (
+        side * GOAL_LINE_X,
+        min(max(point[1], -POST_Y), POST_Y),
+        min(max(point[2], 0.0), BAR_Z),
+    )
+    return math.dist(point, mouth)
 
-    t_cross = times[j] + (GOAL_LINE_X - side * ball[j][0]) / (side * v[0])
-    latest = times[-1] - 0.3  # leave a moment to see it hit the net
-    if t_cross > latest and latest > times[j]:
-        v = tuple(c * (t_cross - times[j]) / (latest - times[j]) for c in v)
-        t_cross = latest
 
-    def at(t):
-        x, y, z = (p + c * (t - times[j]) for p, c in zip(ball[j], v))
-        return (x, y, max(z, 0.0))
+def _find_clearance(ball, start, end, side):
+    """A goal-line clearance between `start` and `end` (exclusive): the ball
+    gets within CLEARANCE_NEAR_M of the line between the posts and under the bar,
+    then retreats CLEARANCE_RETREAT_M before `end`. Returns the index of the
+    closest approach, or None."""
+    seen = [i for i in range(start, end) if ball[i] is not None]
+    if not seen:
+        return None
+    c = max(seen, key=lambda i: side * ball[i][0])
+    x, y, z = ball[c]
+    if GOAL_LINE_X - side * x > CLEARANCE_NEAR_M or abs(y) > POST_Y or z > BAR_Z:
+        return None
+    if any(side * ball[i][0] < side * x - CLEARANCE_RETREAT_M for i in seen if i > c):
+        return c
+    return None
 
+
+def _shift_over_line(ball, times, c, goal_index, side):
+    """Shift the path around frame c so ball[c] is MARGIN over the line,
+    easing in and out over CLEARANCE_BLEND_S (never before the shot).
+    Returns the shift in metres."""
+    dx = side * (GOAL_LINE_X + MARGIN) - ball[c][0]
+    before = min(CLEARANCE_BLEND_S, times[c] - times[goal_index])
+    for i in range(goal_index, len(ball)):
+        if ball[i] is None:
+            continue
+        d = times[i] - times[c]
+        half = before if d < 0 else CLEARANCE_BLEND_S
+        if abs(d) > half:
+            continue
+        w = 0.5 * (1 + math.cos(math.pi * d / half)) if half > 0 else 1.0
+        x, y, z = ball[i]
+        ball[i] = (x + dx * w, y, z)
+    return abs(dx)
+
+
+def _carry_in(ball, times, j, side):
+    """Carry the ball in a straight line at CARRY_SPEED from frame j to 0.3 m
+    inside the nearest post and under the bar. Returns the same tuple as
+    _find_crossing."""
+    max_y = POST_Y - MARGIN
+    x, y, z = ball[j]
+    target = (side * GOAL_LINE_X, min(max(y, -max_y), max_y), min(z, BAR_Z - MARGIN))
+    t_cross = times[j] + math.dist(ball[j], target) / CARRY_SPEED
     k = j + 1
     while k < len(ball) and times[k] < t_cross:
-        ball[k] = at(times[k])
+        w = (times[k] - times[j]) / (t_cross - times[j])
+        ball[k] = _lerp(ball[j], target, w)
         k += 1
-    return k, t_cross, at(t_cross)
+    return k, t_cross, target
 
 
 def correct_goal_mouth(ball, times, goal_index):
     """Return (corrected ball list, info). ball is a list of (x, y, z) or None.
 
-    info: {"corrected": bool, "reason": None | "wide" | "high" | "short",
-           "shift": metres the crossing point moved, "extrapolated": metres
-           of path invented after the ball vanished}.
+    info: {"corrected": bool,
+           "reason": None | "wide" | "high" | "clearance" | "short"
+                     | "not near goal" | "no ball",
+           "shift": metres the crossing (or clearance) point moved,
+           "carried": metres of path invented after the ball vanished,
+           "needs_review": True when the path was left alone and won't go in}.
     """
     ball = list(ball)
-    info = {"corrected": False, "reason": None, "shift": 0.0, "extrapolated": 0.0}
+    info = {"corrected": False, "reason": None, "shift": 0.0, "carried": 0.0, "needs_review": False}
     start = next((i for i in range(goal_index, -1, -1) if ball[i] is not None), None)
     if start is None:
         info["reason"] = "no ball"
+        info["needs_review"] = True
         return ball, info
     side = goal_side(ball, goal_index)
 
+    crossing = _find_crossing(list(ball), times, start, side)
+    end = crossing[0] if crossing else len(ball)
+    c = _find_clearance(ball, start, end, side)
+    if c is not None:
+        info.update(corrected=True, reason="clearance")
+        info["shift"] = _shift_over_line(ball, times, c, goal_index, side)
+        return ball, info
+
     crossing = _find_crossing(ball, times, start, side)
     if crossing is None:
-        last = max(i for i in range(start, len(ball)) if ball[i] is not None)
-        k, t_cross, point = _extrapolate(ball, times, start, side)
-        info["extrapolated"] = math.dist(ball[last][:2], point[:2])
-        info["reason"] = "short"
-    else:
-        k, t_cross, point = crossing
-        if abs(point[1]) > POST_Y:
-            info["reason"] = "wide"
-        elif point[2] > BAR_Z:
-            info["reason"] = "high"
+        j = max(i for i in range(start, len(ball)) if ball[i] is not None)
+        if j == len(ball) - 1 or goal_mouth_distance(ball[j], side) > MAX_CARRY_M:
+            info["reason"] = "not near goal"
+            info["needs_review"] = True
+            return ball, info
+        k, t_cross, point = _carry_in(ball, times, j, side)
+        info.update(corrected=True, reason="short", carried=math.dist(ball[j], point))
+        _into_net(ball, times, k, t_cross, point, side)
+        return ball, info
+
+    k, t_cross, point = crossing
+    if abs(point[1]) > POST_Y:
+        info["reason"] = "wide"
+    elif point[2] > BAR_Z:
+        info["reason"] = "high"
 
     _, yc, zc = point
     if info["reason"]:

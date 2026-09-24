@@ -41,7 +41,9 @@ export interface Clip {
   fps: number
   goalFrame: number
   goalT: number
+  ballSource: 'smoothed' | 'raw' // which PFF ball feed the pipeline picked
   ballCorrected: boolean // the pipeline moved the post-shot ball path so it goes in
+  needsReview: boolean // the ball never gets near the goal and was left as tracked
   teams: Record<TeamSide, Team>
   players: Player[]
   frames: Frame[]

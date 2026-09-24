@@ -6,6 +6,7 @@ To cut every goal in the tournament, use build_all.py.
 
 import bz2
 import json
+import math
 import sys
 from collections import deque
 from pathlib import Path
@@ -19,6 +20,8 @@ AFTER_S = 6.5  # goalT is the shot; the ball crosses the line ~1.3 s later
 MAX_GAP_FRAMES = 15  # fill ball gaps up to ~0.5 s; longer gaps stay null
 PITCH_LENGTH = 105.0
 PITCH_WIDTH = 68.0
+BALL_SOURCES = ("raw", "smoothed")
+RAW_BALL_MAX_M = 8.0  # use raw unless its ball is farther than this from every scoring-team player at the shot
 
 
 def load_json(path):
@@ -101,11 +104,43 @@ def to_standard_pitch(x, y, length, width):
     return x * PITCH_LENGTH / length, y * PITCH_WIDTH / width
 
 
-def ball_position(frame):
-    ball = frame.get("ballsSmoothed")
+def ball_position(frame, source="smoothed"):
+    """(x, y, z) from ballsSmoothed or, for source "raw", the raw balls list."""
+    if source == "smoothed":
+        ball = frame.get("ballsSmoothed")
+    else:
+        ball = (frame.get("balls") or [None])[0]
     if not ball or ball.get("x") is None or ball.get("y") is None:
         return None
     return ball["x"], ball["y"], ball.get("z") or 0.0
+
+
+def ball_path(frames, source, length, width):
+    """The ball per frame on the standard pitch with z clamped; None where missing."""
+    path = []
+    for frame in frames:
+        pos = ball_position(frame, source)
+        if pos is not None:
+            x, y = to_standard_pitch(pos[0], pos[1], length, width)
+            pos = (x, y, clamp_z(pos[2]))
+        path.append(pos)
+    return path
+
+
+def raw_ball_distance(raw_path, team_positions, goal_index):
+    """Distance from the gap-filled raw ball at goalFrame to the nearest of
+    team_positions [(x, y), ...], or None if there's no raw ball there."""
+    ball = fill_gaps(raw_path)[goal_index]
+    if ball is None or not team_positions:
+        return None
+    return min(math.dist(ball[:2], xy) for xy in team_positions)
+
+
+def choose_ball_source(raw_distance):
+    """Raw, unless its ball is missing at the shot or too far from the scoring team."""
+    if raw_distance is None or raw_distance > RAW_BALL_MAX_M:
+        return "smoothed"
+    return "raw"
 
 
 def load_match(game_id):
@@ -142,16 +177,14 @@ def build_clip(meta, roster, goal, frames, goal_index):
                 positions[pid] = to_standard_pitch(p["x"], p["y"], length, width)
         player_frames.append(positions)
 
-    raw_ball = []
-    for frame in frames:
-        pos = ball_position(frame)
-        if pos is not None:
-            x, y = to_standard_pitch(pos[0], pos[1], length, width)
-            pos = (x, y, clamp_z(pos[2]))
-        raw_ball.append(pos)
-    missing_ball = sum(p is None for p in raw_ball)
     times = [(frame["videoTimeMs"] - frames[0]["videoTimeMs"]) / 1000 for frame in frames]
-    ball, correction = correct_goal_mouth(fill_gaps(raw_ball), times, goal_index)
+    # The scorer's team: for an own goal that's the conceding player on the ball.
+    team = [xy for pid, xy in player_frames[goal_index].items() if players[pid]["team"] == goal["side"]]
+    paths = {source: ball_path(frames, source, length, width) for source in BALL_SOURCES}
+    raw_distance = raw_ball_distance(paths["raw"], team, goal_index)
+    ball_source = choose_ball_source(raw_distance)
+    ball, correction = correct_goal_mouth(fill_gaps(paths[ball_source]), times, goal_index)
+    missing_ball = sum(p is None for p in paths[ball_source])
 
     out_frames = []
     for t, b, ps in zip(times, ball, player_frames):
@@ -184,7 +217,9 @@ def build_clip(meta, roster, goal, frames, goal_index):
         "fps": meta["fps"],
         "goalFrame": goal_index,
         "goalT": out_frames[goal_index]["t"],
+        "ballSource": ball_source,
         "ballCorrected": correction["corrected"],
+        "needsReview": correction["needs_review"],
         "teams": {"home": team_meta("home"), "away": team_meta("away")},
         "players": list(players.values()),
         "frames": out_frames,
@@ -196,6 +231,9 @@ def build_clip(meta, roster, goal, frames, goal_index):
         "first_frame": frames[0]["frameNum"],
         "last_frame": frames[-1]["frameNum"],
         "correction": correction,
+        "ball_source": ball_source,
+        "raw_distance": raw_distance,
+        "coverage": {src: sum(p is not None for p in path) / len(path) for src, path in paths.items()},
     }
     return clip, stats
 
@@ -219,7 +257,11 @@ def main():
     c = stats["correction"]
     print(f"frames {stats['first_frame']}..{stats['last_frame']}: {stats['frames']}")
     print(f"ball missing: {stats['missing_ball']} frames, after gap fill and correction: {stats['still_missing_ball']}")
-    print(f"goal-mouth correction: {c['reason'] or 'none'}, shift {c['shift']:.2f} m")
+    d = stats["raw_distance"]
+    print(f"ball source: {stats['ball_source']} (raw ball "
+          f"{'missing' if d is None else f'{d:.1f} m'} from the nearest scoring-team player at the shot)")
+    print(f"goal-mouth correction: {c['reason'] or 'none'}, shift {c['shift']:.2f} m"
+          f"{', NEEDS REVIEW' if c['needs_review'] else ''}")
     print(f"size: {out_path.stat().st_size / 1024:.1f} KB")
 
 

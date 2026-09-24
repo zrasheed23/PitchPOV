@@ -13,7 +13,7 @@ from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
-from cut_clip import RAW, build_clip, load_match, read_windows, write_clip
+from cut_clip import BALL_SOURCES, RAW, RAW_BALL_MAX_M, build_clip, load_match, read_windows, write_clip
 from goals import build_index, clip_name, find_goals
 
 CLIPS = Path("clips")
@@ -78,6 +78,19 @@ def report(matches, results, problems, n_games):
         print(f"frames with no ball: {100 * raw_missing / total:.1f}% in raw tracking, "
               f"{100 * final_missing / total:.1f}% after gap fill and goal-mouth correction")
 
+        print(f"raw ball to nearest scoring-team player at the shot, sorted "
+              f"(raw if <= {RAW_BALL_MAX_M:.0f} m, else smoothed):")
+        by_distance = sorted(results, key=lambda r: (r[1]["raw_distance"] is None, r[1]["raw_distance"] or 0))
+        for g, s in by_distance:
+            d = s["raw_distance"]
+            cov = ", ".join(f"{src} {100 * s['coverage'][src]:.0f}%" for src in BALL_SOURCES)
+            c = s["correction"]
+            fix = f", corrected ({c['reason']}, {c['shift']:.1f} m)" if c["corrected"] else ""
+            print(f"  {'missing' if d is None else f'{d:5.1f} m'}  -> {s['ball_source']:8} {clip_name(g)}  "
+                  f"{g['scorer']} {g['clock']}  (ball in {cov} of frames){fix}")
+        per_source = Counter(s["ball_source"] for s in stats)
+        print("clips per ball source: " + ", ".join(f"{src} {per_source[src]}" for src in BALL_SOURCES))
+
         corrected = [(g, s["correction"]) for g, s in results if s["correction"]["corrected"]]
         by_reason = {}
         for _, c in corrected:
@@ -88,14 +101,15 @@ def report(matches, results, problems, n_games):
         print(f"shifted more than {BIG_SHIFT_M:.0f} m (check by eye): {len(big)}")
         for g, c in sorted(big, key=lambda gc: -gc[1]["shift"]):
             print(f"  {clip_name(g)}  {g['scorer']} {g['clock']}  {c['reason']}, shift {c['shift']:.1f} m")
-        long_extrap = [(g, c) for g, c in corrected if c["extrapolated"] > BIG_SHIFT_M]
-        if long_extrap:
-            print(f"ball extrapolated more than {BIG_SHIFT_M:.0f} m after it vanished (check by eye): {len(long_extrap)}")
-            for g, c in sorted(long_extrap, key=lambda gc: -gc[1]["extrapolated"]):
-                print(f"  {clip_name(g)}  {g['scorer']} {g['clock']}  {c['extrapolated']:.1f} m")
-        no_ball = [g for g, s in results if s["correction"]["reason"] == "no ball"]
-        for g in no_ball:
-            print(f"  no ball at or before the shot, not corrected: {clip_name(g)} {g['scorer']}")
+        carried = [(g, c) for g, c in corrected if c["carried"] > 0]
+        if carried:
+            print(f"ball carried in after it vanished near goal: {len(carried)}")
+            for g, c in sorted(carried, key=lambda gc: -gc[1]["carried"]):
+                print(f"  {clip_name(g)}  {g['scorer']} {g['clock']}  {c['carried']:.1f} m")
+        review = [(g, s["correction"]) for g, s in results if s["correction"]["needs_review"]]
+        print(f"needsReview (ball left as is, doesn't go in): {len(review)}")
+        for g, c in review:
+            print(f"  {clip_name(g)}  {g['scorer']} {g['clock']}  {c['reason']}")
 
     print(f"problems: {len(problems)}")
     for p in problems:

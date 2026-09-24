@@ -6,7 +6,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "pipeline"))
 
-from goal_mouth import BAR_Z, GOAL_LINE_X, MARGIN, NET_DEPTH, POST_Y, correct_goal_mouth
+from goal_mouth import BAR_Z, GOAL_LINE_X, MARGIN, MAX_CARRY_M, NET_DEPTH, POST_Y, correct_goal_mouth, goal_mouth_distance
 
 FPS = 30
 GOAL = 30  # shot at frame 30 (t = 1 s)
@@ -73,20 +73,72 @@ def test_shot_over_the_bar_is_brought_under_it():
     assert_rests_in_net(out)
 
 
-def test_ball_that_vanishes_short_of_the_line_is_carried_in():
-    ball, times = path((52.5, 5.0, 0.3), vanish_at=GOAL + 10)
+def test_ball_that_vanishes_near_goal_is_carried_in():
+    ball, times = path((52.5, 5.0, 0.3), vanish_at=GOAL + 25)  # vanishes ~2 m out
     out, info = correct_goal_mouth(ball, times, GOAL)
-    assert info["reason"] == "short"
-    assert info["extrapolated"] > 0
+    assert info["reason"] == "short" and not info["needs_review"]
+    assert 0 < info["carried"] <= MAX_CARRY_M
+    assert out[: GOAL + 25] == ball[: GOAL + 25]
     assert abs(crossing_point(out)[1]) <= POST_Y - MARGIN + 1e-9
     assert_rests_in_net(out)
 
 
-def test_ball_missing_from_the_shot_heads_for_goal():
-    ball, times = path((52.5, 0.0, 0.3), vanish_at=GOAL + 1)
+def test_ball_that_vanishes_far_from_goal_is_left_for_review():
+    ball, times = path((52.5, 0.0, 0.3), vanish_at=GOAL + 10)  # vanishes ~8 m out
     out, info = correct_goal_mouth(ball, times, GOAL)
-    assert info["reason"] == "short"
-    assert_rests_in_net(out)
+    assert info["needs_review"] is True and info["corrected"] is False
+    assert info["reason"] == "not near goal"
+    assert out == ball  # no invented flight
+
+
+def test_ball_tracked_to_the_end_but_never_near_goal_is_left_for_review():
+    ball, times = path((20.0, 10.0, 0.0), side=1)  # heads back upfield
+    out, info = correct_goal_mouth(ball, times, GOAL)
+    assert info["needs_review"] is True
+    assert out == ball
+
+
+def clearance(closest_x, y=1.0, n=150):
+    """Shot at frame GOAL runs in 0.5 s to closest_x, then is cleared back upfield."""
+    ball = []
+    for i in range(n):
+        if i <= GOAL:
+            x = 40.0
+        elif i <= GOAL + 15:
+            x = 40.0 + (closest_x - 40.0) * (i - GOAL) / 15
+        else:
+            x = closest_x - 0.3 * (i - GOAL - 15)
+        ball.append((x, y, 0.2))
+    return ball, [i / FPS for i in range(n)]
+
+
+def test_goal_line_clearance_is_pulled_just_over_the_line_and_kept():
+    ball, times = clearance(51.4)  # like Messi 108': ~1 m short, then cleared
+    out, info = correct_goal_mouth(ball, times, GOAL)
+    assert info["reason"] == "clearance" and info["corrected"] and not info["needs_review"]
+    assert info["shift"] == pytest.approx(GOAL_LINE_X + MARGIN - 51.4)
+    closest = max(out, key=lambda b: b[0])
+    assert closest[0] == pytest.approx(GOAL_LINE_X + MARGIN)
+    # Blends back to the real path ~0.5 s either side; the clearance stays.
+    c = GOAL + 15
+    assert out[: GOAL + 1] == ball[: GOAL + 1]
+    assert out[c + 16 :] == ball[c + 16 :]
+    assert all(o[1:] == b[1:] for o, b in zip(out, ball))  # only x moves
+    # No jump: the shift changes by at most ~0.15 m between frames.
+    extra = [abs((o2[0] - o1[0]) - (b2[0] - b1[0])) for o1, o2, b1, b2 in zip(out, out[1:], ball, ball[1:])]
+    assert max(extra) < 0.15
+
+
+def test_ball_that_stops_short_and_is_cleared_from_far_out_is_not_a_clearance():
+    ball, times = clearance(49.0)  # 3.5 m short: not a goal-line clearance
+    _, info = correct_goal_mouth(ball, times, GOAL)
+    assert info["reason"] == "not near goal" and info["needs_review"]
+
+
+def test_goal_mouth_distance():
+    assert goal_mouth_distance((52.5, 1.0, 1.0), 1) == 0.0
+    assert goal_mouth_distance((49.5, 7.66, 0.0), 1) == pytest.approx(5.0)
+    assert goal_mouth_distance((-50.5, 0.0, 0.0), -1) == pytest.approx(2.0)
 
 
 def test_goal_at_the_negative_end():

@@ -3,9 +3,12 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "pipeline"))
 
-from cut_clip import clamp_z, fill_gaps, read_windows, to_standard_pitch
+from cut_clip import (RAW_BALL_MAX_M, ball_path, ball_position, choose_ball_source, clamp_z, fill_gaps,
+                      raw_ball_distance, read_windows, to_standard_pitch)
 
 
 def test_clamp_z():
@@ -49,3 +52,30 @@ def test_read_windows_cuts_several_goals_in_one_pass(tmp_path):
     frames, goal_index = windows[222]
     assert frames[goal_index]["frameNum"] == 120
     assert frames[0]["frameNum"] == 90 and frames[-1]["frameNum"] == 140
+
+
+def test_ball_position_reads_either_source():
+    frame = {"ballsSmoothed": {"x": 1.0, "y": 2.0, "z": None},
+             "balls": [{"x": 3.0, "y": 4.0, "z": 0.5}]}
+    assert ball_position(frame, "smoothed") == (1.0, 2.0, 0.0)
+    assert ball_position(frame, "raw") == (3.0, 4.0, 0.5)
+    assert ball_position({"ballsSmoothed": None, "balls": []}, "raw") is None
+
+
+def test_ball_path_converts_and_clamps():
+    frames = [{"balls": [{"x": 55.0, "y": 35.0, "z": -0.2}]}, {"balls": []}]
+    assert ball_path(frames, "raw", 110.0, 70.0) == [(52.5, 34.0, 0.0), None]
+
+
+def test_raw_ball_distance_is_to_the_nearest_teammate_at_the_shot():
+    raw = [(40.0, 0.0, 0.0), None, (42.0, 0.0, 0.0)]  # gap-filled to (41, 0) at the shot
+    team = [(50.0, 0.0), (41.0, 3.0)]
+    assert raw_ball_distance(raw, team, 1) == pytest.approx(3.0)
+    assert raw_ball_distance([None, None, None], team, 1) is None
+
+
+def test_raw_by_default_smoothed_when_raw_is_far_or_missing():
+    assert choose_ball_source(0.5) == "raw"
+    assert choose_ball_source(RAW_BALL_MAX_M) == "raw"
+    assert choose_ball_source(RAW_BALL_MAX_M + 0.1) == "smoothed"  # like Di María, 13 m
+    assert choose_ball_source(None) == "smoothed"
