@@ -7,8 +7,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "pipeline"))
 
-from cut_clip import (RAW_BALL_MAX_M, ball_path, ball_position, choose_ball_source, clamp_z, fill_gaps,
-                      raw_ball_distance, read_windows, to_standard_pitch)
+from cut_clip import (OVERRIDES, RAW_BALL_MAX_M, ball_path, ball_position, choose_ball_source, clamp_z, fill_gaps,
+                      load_overrides, pick_ball_source, raw_ball_distance, read_windows, to_standard_pitch)
 
 
 def test_clamp_z():
@@ -79,3 +79,25 @@ def test_raw_by_default_smoothed_when_raw_is_far_or_missing():
     assert choose_ball_source(RAW_BALL_MAX_M) == "raw"
     assert choose_ball_source(RAW_BALL_MAX_M + 0.1) == "smoothed"  # like Di María, 13 m
     assert choose_ball_source(None) == "smoothed"
+
+
+def test_override_wins_over_the_automatic_choice():
+    override = {"ballSource": "smoothed", "note": "raw ball ~8 m from Mbappé at the shot"}
+    assert pick_ball_source(7.7) == ("raw", "raw")
+    assert pick_ball_source(7.7, override) == ("smoothed", "raw")
+    assert pick_ball_source(13.3, {"ballSource": "raw", "note": "x"}) == ("raw", "smoothed")
+
+
+def test_load_overrides_checks_entries(tmp_path):
+    assert load_overrides(tmp_path / "missing.json") == {}
+    path = tmp_path / "overrides.json"
+    path.write_text(json.dumps({"1_2.json": {"ballSource": "smoothed", "note": "why"}}))
+    assert load_overrides(path)["1_2.json"]["ballSource"] == "smoothed"
+    for bad in ({"ballSource": "balls", "note": "why"}, {"ballSource": "raw"}):
+        path.write_text(json.dumps({"1_2.json": bad}))
+        with pytest.raises(ValueError):
+            load_overrides(path)
+
+
+def test_checked_in_overrides_are_valid():
+    assert load_overrides(OVERRIDES)["10517_6738451.json"]["ballSource"] == "smoothed"

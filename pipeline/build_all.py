@@ -13,7 +13,8 @@ from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
-from cut_clip import BALL_SOURCES, RAW, RAW_BALL_MAX_M, build_clip, load_match, read_windows, write_clip
+from cut_clip import (BALL_SOURCES, OVERRIDES, RAW, RAW_BALL_MAX_M, build_clip, load_match, load_overrides,
+                      read_windows, write_clip)
 from goals import build_index, clip_name, find_goals
 
 CLIPS = Path("clips")
@@ -33,7 +34,7 @@ def game_ids():
     return ids
 
 
-def process_game(game_id):
+def process_game(game_id, overrides):
     """Cut every goal in one match (one pass over its tracking file)."""
     meta, roster, events = load_match(game_id)
     goals, problems = find_goals(events)
@@ -45,7 +46,7 @@ def process_game(game_id):
                             "not found in tracking, no clip")
             continue
         frames, goal_index = windows[goal["gameEventId"]]
-        clip, stats = build_clip(meta, roster, goal, frames, goal_index)
+        clip, stats = build_clip(meta, roster, goal, frames, goal_index, overrides.get(clip_name(goal)))
         write_clip(clip, CLIPS / clip_name(goal))
         results.append((goal, stats))
     return meta, goals, results, problems
@@ -86,10 +87,16 @@ def report(matches, results, problems, n_games):
             cov = ", ".join(f"{src} {100 * s['coverage'][src]:.0f}%" for src in BALL_SOURCES)
             c = s["correction"]
             fix = f", corrected ({c['reason']}, {c['shift']:.1f} m)" if c["corrected"] else ""
+            mark = f"  OVERRIDE (auto {s['auto_source']})" if s["override"] else ""
             print(f"  {'missing' if d is None else f'{d:5.1f} m'}  -> {s['ball_source']:8} {clip_name(g)}  "
-                  f"{g['scorer']} {g['clock']}  (ball in {cov} of frames){fix}")
+                  f"{g['scorer']} {g['clock']}  (ball in {cov} of frames){fix}{mark}")
         per_source = Counter(s["ball_source"] for s in stats)
         print("clips per ball source: " + ", ".join(f"{src} {per_source[src]}" for src in BALL_SOURCES))
+        overridden = [(g, s) for g, s in results if s["override"]]
+        print(f"overridden in {OVERRIDES.name}: {len(overridden)}")
+        for g, s in overridden:
+            print(f"  {clip_name(g)}  {g['scorer']} {g['clock']}  {s['auto_source']} -> {s['ball_source']}: "
+                  f"{s['override']['note']}")
 
         corrected = [(g, s["correction"]) for g, s in results if s["correction"]["corrected"]]
         by_reason = {}
@@ -122,15 +129,23 @@ def main():
     args = parser.parse_args()
 
     ids = game_ids()
+    overrides = load_overrides()
     print(f"{len(ids)} matches in {RAW}")
     matches, results, problems = [], [], []
     with ProcessPoolExecutor(max_workers=min(args.jobs, len(ids) or 1)) as pool:
-        for game_id, (meta, goals, game_results, game_problems) in zip(ids, pool.map(process_game, ids)):
+        per_game = pool.map(process_game, ids, [overrides] * len(ids))
+        for game_id, (meta, goals, game_results, game_problems) in zip(ids, per_game):
             print(f"  {game_id} {meta['homeTeam']['shortName']} v {meta['awayTeam']['shortName']}: "
                   f"{len(goals)} goals")
             matches.append((meta, goals))
             results.extend(game_results)
             problems.extend(game_problems)
+
+    names = {clip_name(g) for g, _ in results}
+    loaded = set(ids)
+    for name in overrides:
+        if name not in names and name.split("_")[0] in loaded:
+            problems.append(f"{OVERRIDES.name}: {name} matches no clip")
 
     # Only list goals that got a clip.
     written = {r[0]["gameEventId"] for r in results}

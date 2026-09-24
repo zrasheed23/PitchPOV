@@ -12,9 +12,10 @@ from collections import deque
 from pathlib import Path
 
 from goal_mouth import correct_goal_mouth
-from goals import find_goals
+from goals import clip_name, find_goals
 
 RAW = Path("data/raw")
+OVERRIDES = Path(__file__).resolve().parent / "overrides.json"
 BEFORE_S = 15.0
 AFTER_S = 6.5  # goalT is the shot; the ball crosses the line ~1.3 s later
 MAX_GAP_FRAMES = 15  # fill ball gaps up to ~0.5 s; longer gaps stay null
@@ -143,6 +144,23 @@ def choose_ball_source(raw_distance):
     return "raw"
 
 
+def load_overrides(path=OVERRIDES):
+    """Hand-picked ball sources: {clip file name: {"ballSource", "note"}}."""
+    if not path.exists():
+        return {}
+    overrides = load_json(path)
+    for name, o in overrides.items():
+        if o.get("ballSource") not in BALL_SOURCES or not o.get("note"):
+            raise ValueError(f"{path}: {name} needs a ballSource in {BALL_SOURCES} and a note")
+    return overrides
+
+
+def pick_ball_source(raw_distance, override=None):
+    """(source, automatic choice): an override wins over choose_ball_source."""
+    auto = choose_ball_source(raw_distance)
+    return (override["ballSource"] if override else auto), auto
+
+
 def load_match(game_id):
     meta = load_json(RAW / "metadata" / f"{game_id}.json")[0]
     roster = load_json(RAW / "rosters" / f"{game_id}.json")
@@ -150,8 +168,9 @@ def load_match(game_id):
     return meta, roster, events
 
 
-def build_clip(meta, roster, goal, frames, goal_index):
-    """Turn one goal's raw tracking window into the clip dict. goal is a find_goals entry."""
+def build_clip(meta, roster, goal, frames, goal_index, override=None):
+    """Turn one goal's raw tracking window into the clip dict. goal is a find_goals
+    entry; override is its overrides.json entry, if any."""
     pitch = meta["stadium"]["pitches"][0]
     length, width = pitch["length"], pitch["width"]
     by_shirt = {(r["team"]["id"], r["shirtNumber"]): r for r in roster}
@@ -182,7 +201,7 @@ def build_clip(meta, roster, goal, frames, goal_index):
     team = [xy for pid, xy in player_frames[goal_index].items() if players[pid]["team"] == goal["side"]]
     paths = {source: ball_path(frames, source, length, width) for source in BALL_SOURCES}
     raw_distance = raw_ball_distance(paths["raw"], team, goal_index)
-    ball_source = choose_ball_source(raw_distance)
+    ball_source, auto_source = pick_ball_source(raw_distance, override)
     ball, correction = correct_goal_mouth(fill_gaps(paths[ball_source]), times, goal_index)
     missing_ball = sum(p is None for p in paths[ball_source])
 
@@ -233,6 +252,8 @@ def build_clip(meta, roster, goal, frames, goal_index):
         "correction": correction,
         "ball_source": ball_source,
         "raw_distance": raw_distance,
+        "auto_source": auto_source,
+        "override": override,
         "coverage": {src: sum(p is not None for p in path) / len(path) for src, path in paths.items()},
     }
     return clip, stats
@@ -252,7 +273,8 @@ def main():
     if goal is None:
         sys.exit(f"{game_event_id} is not a goal in game {game_id}")
     frames, goal_index = read_window(RAW / "tracking" / f"{game_id}.jsonl.bz2", game_event_id)
-    clip, stats = build_clip(meta, roster, goal, frames, goal_index)
+    override = load_overrides().get(clip_name(goal))
+    clip, stats = build_clip(meta, roster, goal, frames, goal_index, override)
     write_clip(clip, out_path)
     c = stats["correction"]
     print(f"frames {stats['first_frame']}..{stats['last_frame']}: {stats['frames']}")
@@ -260,6 +282,8 @@ def main():
     d = stats["raw_distance"]
     print(f"ball source: {stats['ball_source']} (raw ball "
           f"{'missing' if d is None else f'{d:.1f} m'} from the nearest scoring-team player at the shot)")
+    if stats["override"]:
+        print(f"  overridden (automatic choice: {stats['auto_source']}): {stats['override']['note']}")
     print(f"goal-mouth correction: {c['reason'] or 'none'}, shift {c['shift']:.2f} m"
           f"{', NEEDS REVIEW' if c['needs_review'] else ''}")
     print(f"size: {out_path.stat().st_size / 1024:.1f} KB")
