@@ -3,6 +3,7 @@ import { useFrame } from '@react-three/fiber'
 import { type RefObject, useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { type Clip, clipDuration, sampleClip } from './clip'
+import { kitColors } from './kit'
 import type { Playback } from './playback'
 
 const PLAYER_HEIGHT = 1.8
@@ -54,6 +55,7 @@ export function Replay({ clip, playback, ball, onEnded }: ReplayProps) {
   const [hovered, setHovered] = useState<string | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
   const labelled = hovered ?? selected
+  const colors = useMemo(() => kitColors(clip.teams), [clip])
 
   useEffect(() => {
     document.body.style.cursor = hovered ? 'pointer' : ''
@@ -109,7 +111,7 @@ export function Replay({ clip, playback, ball, onEnded }: ReplayProps) {
         >
           <mesh position={[0, PLAYER_HEIGHT / 2, 0]}>
             <cylinderGeometry args={[PLAYER_RADIUS, PLAYER_RADIUS, PLAYER_HEIGHT, 20]} />
-            <meshStandardMaterial color={clip.teams[p.team].color} />
+            <meshStandardMaterial color={colors[p.team]} />
           </mesh>
           <mesh position={[0, PLAYER_HEIGHT / 2 + 0.3, 0]}>
             <cylinderGeometry args={[1, 1, PLAYER_HEIGHT + 0.6, 8]} />

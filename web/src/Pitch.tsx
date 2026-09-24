@@ -1,3 +1,5 @@
+import * as THREE from 'three'
+
 // Pitch in three.js space: pitch x -> three x, pitch y -> three -z, up is +y.
 
 const LENGTH = 105
@@ -17,8 +19,10 @@ const CIRCLE_R = 9.15
 const GOAL_WIDTH = 7.32
 const GOAL_HEIGHT = 2.44
 const POST_R = 0.06
+const NET_DEPTH = 2.2 // the pipeline rests the ball 2 m behind the line
 
 const lineMat = <meshBasicMaterial color="white" />
+const netMat = <meshBasicMaterial color="white" transparent opacity={0.18} side={THREE.DoubleSide} depthWrite={false} />
 
 // Axis-aligned line segment between two pitch points.
 function Segment({ x1, y1, x2, y2 }: { x1: number; y1: number; x2: number; y2: number }) {
@@ -79,6 +83,21 @@ function Goal({ side }: { side: 1 | -1 }) {
         <cylinderGeometry args={[POST_R, POST_R, GOAL_WIDTH + POST_R * 2, 12]} />
         <meshStandardMaterial color="white" />
       </mesh>
+      {/* Net: back, roof, and sides as faint see-through panels. */}
+      <mesh position={[x + side * NET_DEPTH, GOAL_HEIGHT / 2, 0]} rotation-y={Math.PI / 2}>
+        <planeGeometry args={[GOAL_WIDTH, GOAL_HEIGHT]} />
+        {netMat}
+      </mesh>
+      <mesh position={[x + (side * NET_DEPTH) / 2, GOAL_HEIGHT, 0]} rotation-x={Math.PI / 2}>
+        <planeGeometry args={[NET_DEPTH, GOAL_WIDTH]} />
+        {netMat}
+      </mesh>
+      {[hw, -hw].map((z) => (
+        <mesh key={z} position={[x + (side * NET_DEPTH) / 2, GOAL_HEIGHT / 2, z]}>
+          <planeGeometry args={[NET_DEPTH, GOAL_HEIGHT]} />
+          {netMat}
+        </mesh>
+      ))}
     </group>
   )
 }

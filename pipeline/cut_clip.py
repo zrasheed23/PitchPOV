@@ -1,6 +1,7 @@
 """Cut a ~21.5 s tracking clip around one goal and write it as compact JSON.
 
 Usage: python pipeline/cut_clip.py GAME_ID GAME_EVENT_ID OUT_PATH
+To cut every goal in the tournament, use build_all.py.
 """
 
 import bz2
@@ -8,6 +9,9 @@ import json
 import sys
 from collections import deque
 from pathlib import Path
+
+from goal_mouth import correct_goal_mouth
+from goals import find_goals
 
 RAW = Path("data/raw")
 BEFORE_S = 15.0
@@ -22,32 +26,46 @@ def load_json(path):
         return json.load(f)
 
 
-def read_window(tracking_path, game_event_id, before_s=BEFORE_S, after_s=AFTER_S):
-    """Return (frames, goal_index) for the raw frames within the window around the event."""
+def read_windows(tracking_path, game_event_ids, before_s=BEFORE_S, after_s=AFTER_S):
+    """Cut the window around every event in one pass over the tracking file.
+
+    Returns {game_event_id: (frames, goal_index)}; ids never seen are missing.
+    """
+    wanted = set(game_event_ids)
     buffer = deque()
-    goal_time = None
-    frames = None
+    open_windows = {}  # id -> (goal_time, frames, goal_index)
+    done = {}
     with bz2.open(tracking_path, "rt") as f:
         for line in f:
             frame = json.loads(line)
             if frame.get("videoTimeMs") is None:
                 continue
             t = frame["videoTimeMs"] / 1000
-            if goal_time is None:
-                buffer.append(frame)
-                while buffer and buffer[0]["videoTimeMs"] / 1000 < t - before_s:
-                    buffer.popleft()
-                if frame.get("game_event_id") == game_event_id:
-                    goal_time = t
-                    frames = list(buffer)
-                    goal_index = len(frames) - 1
-            elif t <= goal_time + after_s:
-                frames.append(frame)
-            else:
+            buffer.append(frame)
+            while buffer[0]["videoTimeMs"] / 1000 < t - before_s:
+                buffer.popleft()
+            for eid, (goal_time, frames, goal_index) in list(open_windows.items()):
+                if t <= goal_time + after_s:
+                    frames.append(frame)
+                else:
+                    done[eid] = (frames, goal_index)
+                    del open_windows[eid]
+            eid = frame.get("game_event_id")
+            if eid in wanted and eid not in open_windows and eid not in done:
+                open_windows[eid] = (t, list(buffer), len(buffer) - 1)
+            if not open_windows and len(done) == len(wanted):
                 break
-    if goal_time is None:
+    for eid, (_, frames, goal_index) in open_windows.items():
+        done[eid] = (frames, goal_index)
+    return done
+
+
+def read_window(tracking_path, game_event_id, before_s=BEFORE_S, after_s=AFTER_S):
+    """Return (frames, goal_index) for the raw frames within the window around the event."""
+    windows = read_windows(tracking_path, [game_event_id], before_s, after_s)
+    if game_event_id not in windows:
         raise ValueError(f"game_event_id {game_event_id} not found in tracking")
-    return frames, goal_index
+    return windows[game_event_id]
 
 
 def clamp_z(z):
@@ -90,18 +108,17 @@ def ball_position(frame):
     return ball["x"], ball["y"], ball.get("z") or 0.0
 
 
-def build_clip(game_id, game_event_id):
+def load_match(game_id):
     meta = load_json(RAW / "metadata" / f"{game_id}.json")[0]
     roster = load_json(RAW / "rosters" / f"{game_id}.json")
     events = load_json(RAW / "events" / f"{game_id}.json")
-    event = next(e for e in events if e["gameEventId"] == game_event_id)
+    return meta, roster, events
+
+
+def build_clip(meta, roster, goal, frames, goal_index):
+    """Turn one goal's raw tracking window into the clip dict. goal is a find_goals entry."""
     pitch = meta["stadium"]["pitches"][0]
     length, width = pitch["length"], pitch["width"]
-
-    frames, goal_index = read_window(
-        RAW / "tracking" / f"{game_id}.jsonl.bz2", game_event_id
-    )
-
     by_shirt = {(r["team"]["id"], r["shirtNumber"]): r for r in roster}
     sides = {"home": meta["homeTeam"], "away": meta["awayTeam"]}
 
@@ -133,13 +150,13 @@ def build_clip(game_id, game_event_id):
             pos = (x, y, clamp_z(pos[2]))
         raw_ball.append(pos)
     missing_ball = sum(p is None for p in raw_ball)
-    ball = fill_gaps(raw_ball)
+    times = [(frame["videoTimeMs"] - frames[0]["videoTimeMs"]) / 1000 for frame in frames]
+    ball, correction = correct_goal_mouth(fill_gaps(raw_ball), times, goal_index)
 
-    t0 = frames[0]["videoTimeMs"]
     out_frames = []
-    for frame, b, ps in zip(frames, ball, player_frames):
+    for t, b, ps in zip(times, ball, player_frames):
         out_frames.append({
-            "t": round((frame["videoTimeMs"] - t0) / 1000, 2),
+            "t": round(t, 2),
             "b": [round(v, 2) for v in b] if b is not None else None,
             "p": {pid: [round(x, 2), round(y, 2)] for pid, (x, y) in ps.items()},
         })
@@ -152,18 +169,22 @@ def build_clip(game_id, game_event_id):
             "shortName": sides[side]["shortName"],
             "color": kit["primaryColor"],
             "textColor": kit["primaryTextColor"],
+            "secondaryColor": kit["secondaryColor"],
         }
 
-    pe = event["possessionEvents"]
     clip = {
-        "gameId": game_id,
-        "gameEventId": game_event_id,
-        "scorer": pe["shooterPlayerName"],
-        "clock": pe["formattedGameClock"],
-        "period": event["gameEvents"]["period"],
+        "gameId": str(meta["id"]),
+        "gameEventId": goal["gameEventId"],
+        "scorer": goal["scorer"],
+        "scorerId": goal["scorerId"],
+        "scorerTeam": goal["side"],
+        "ownGoal": goal["ownGoal"],
+        "clock": goal["clock"],
+        "period": goal["period"],
         "fps": meta["fps"],
         "goalFrame": goal_index,
         "goalT": out_frames[goal_index]["t"],
+        "ballCorrected": correction["corrected"],
         "teams": {"home": team_meta("home"), "away": team_meta("away")},
         "players": list(players.values()),
         "frames": out_frames,
@@ -174,18 +195,31 @@ def build_clip(game_id, game_event_id):
         "still_missing_ball": sum(b is None for b in ball),
         "first_frame": frames[0]["frameNum"],
         "last_frame": frames[-1]["frameNum"],
+        "correction": correction,
     }
     return clip, stats
 
 
-def main():
-    game_id, game_event_id, out_path = sys.argv[1], int(sys.argv[2]), Path(sys.argv[3])
-    clip, stats = build_clip(game_id, game_event_id)
+def write_clip(clip, out_path):
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w") as f:
         json.dump(clip, f, separators=(",", ":"), ensure_ascii=False)
+
+
+def main():
+    game_id, game_event_id, out_path = sys.argv[1], int(sys.argv[2]), Path(sys.argv[3])
+    meta, roster, events = load_match(game_id)
+    goals, _ = find_goals(events)
+    goal = next((g for g in goals if g["gameEventId"] == game_event_id), None)
+    if goal is None:
+        sys.exit(f"{game_event_id} is not a goal in game {game_id}")
+    frames, goal_index = read_window(RAW / "tracking" / f"{game_id}.jsonl.bz2", game_event_id)
+    clip, stats = build_clip(meta, roster, goal, frames, goal_index)
+    write_clip(clip, out_path)
+    c = stats["correction"]
     print(f"frames {stats['first_frame']}..{stats['last_frame']}: {stats['frames']}")
-    print(f"ball missing: {stats['missing_ball']} frames, after gap fill: {stats['still_missing_ball']}")
+    print(f"ball missing: {stats['missing_ball']} frames, after gap fill and correction: {stats['still_missing_ball']}")
+    print(f"goal-mouth correction: {c['reason'] or 'none'}, shift {c['shift']:.2f} m")
     print(f"size: {out_path.stat().st_size / 1024:.1f} KB")
 
 

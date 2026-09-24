@@ -9,6 +9,7 @@ export interface Team {
   shortName: string
   color: string
   textColor: string
+  secondaryColor: string
 }
 
 export interface Player {
@@ -32,11 +33,15 @@ export interface Clip {
   gameId: string
   gameEventId: number
   scorer: string
+  scorerId: string
+  scorerTeam: TeamSide
+  ownGoal: boolean
   clock: string
   period: number
   fps: number
   goalFrame: number
   goalT: number
+  ballCorrected: boolean // the pipeline moved the post-shot ball path so it goes in
   teams: Record<TeamSide, Team>
   players: Player[]
   frames: Frame[]

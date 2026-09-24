@@ -7,16 +7,103 @@ body,
   overflow: hidden;
 }
 
-.overlay {
+.panel {
   position: fixed;
   top: 12px;
   left: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 300px;
+  max-width: calc(100% - 24px);
+  max-height: calc(100% - 110px);
   padding: 8px 12px;
+  box-sizing: border-box;
   border-radius: 6px;
-  background: rgba(0, 0, 0, 0.55);
+  background: rgba(0, 0, 0, 0.6);
   color: #fff;
   font: 14px/1.4 system-ui, sans-serif;
-  pointer-events: none;
+}
+
+.muted {
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.error {
+  color: #ff8a80;
+}
+
+.tag {
+  margin-left: 6px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: #ffcc33;
+  color: #111;
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: 1px;
+}
+
+.picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  font-size: 13px;
+}
+
+.picker-title {
+  font-weight: 600;
+}
+
+.search {
+  font: inherit;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 4px;
+  padding: 6px 8px;
+}
+
+.search::placeholder {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.list button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border-color: transparent;
+}
+
+.list button:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.list button[aria-pressed='true'] {
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
+}
+
+.list .empty {
+  padding: 4px 10px;
+}
+
+.back {
+  align-self: flex-start;
 }
 
 .scorer {
