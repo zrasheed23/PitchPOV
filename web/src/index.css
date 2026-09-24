@@ -1,0 +1,29 @@
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  background: #111;
+  overflow: hidden;
+}
+
+.overlay {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font: 14px/1.4 system-ui, sans-serif;
+  pointer-events: none;
+}
+
+.scorer {
+  font-weight: 600;
+  font-size: 16px;
+}
+
+.time {
+  font-variant-numeric: tabular-nums;
+}
