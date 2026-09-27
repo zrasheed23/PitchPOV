@@ -2,13 +2,18 @@ import { Html } from '@react-three/drei'
 import { useFrame } from '@react-three/fiber'
 import { type RefObject, useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
-import { type Clip, attackingSide, clipDuration, sampleClip } from './clip'
+import { type Clip, attackingSide, clipDuration, frameIndexAt, sampleClip } from './clip'
 import { colorDistance, kitColors } from './kit'
 import { distanceAt, runDistances, velocities } from './motion'
 import type { Playback } from './playback'
 import { type Kit, PlayerBody } from './Player'
-import { DIVE_LENGTH_S, PLAYER_HEIGHT, type Rig, animateDive, animateRig } from './rig'
+import { DIVE_LENGTH_S, PLAYER_HEIGHT, type Rig, animateDive, animateRig, animateTouch } from './rig'
 
+const TOUCH_WINDOW_S = 0.25 // a touch is animated (and the ball pulled onto the foot/head) this long either side
+const touchPoint = new THREE.Vector3()
+const ballPoint = new THREE.Vector3()
+const smooth = (x: number) => (x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3 - 2 * x))
+const ESTIMATED_BALL_OPACITY = 0.55 // ball drawn this faded where its position is estimated
 const BALL_RADIUS = 0.16 // a bit larger than a real ball (0.11) so it reads from afar
 const LABEL_Y = PLAYER_HEIGHT + 0.75
 const STRIDE_M = 2.4 // metres per full running cycle (two steps)
@@ -148,6 +153,28 @@ export function Replay({ clip, playback, ball, onEnded }: ReplayProps) {
   const dist = useMemo(() => runDistances(clip), [clip])
   const playerKits = useMemo(() => kits(clip), [clip])
   const dive = useMemo(() => planDive(clip), [clip])
+  // Touches with their clip times, and which way each player faces for it:
+  // toward where the ball goes next, or where it came from if it stops there.
+  const touches = useMemo(
+    () =>
+      (clip.contacts ?? []).map((c) => {
+        const t = clip.frames[c.f].t
+        const at = sampleClip(clip, t).ball
+        const next = sampleClip(clip, Math.min(t + 0.25, duration)).ball
+        const prev = sampleClip(clip, Math.max(t - 0.25, 0)).ball
+        let dir: [number, number] | null = null
+        if (at && next && Math.hypot(next[0] - at[0], next[1] - at[1]) > 0.8) dir = [next[0] - at[0], next[1] - at[1]]
+        else if (at && prev) dir = [prev[0] - at[0], prev[1] - at[1]]
+        return { ...c, t, dir }
+      }),
+    [clip, duration],
+  )
+  // Frames where the pipeline estimated the ball; it's drawn slightly faded there.
+  const estimated = useMemo(() => {
+    const flags = new Uint8Array(clip.frames.length)
+    for (const [a, b] of clip.ballEstimated ?? []) flags.fill(1, a, b + 1)
+    return flags
+  }, [clip])
   const [hovered, setHovered] = useState<string | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
   const labelled = hovered ?? selected
@@ -168,6 +195,13 @@ export function Replay({ clip, playback, ball, onEnded }: ReplayProps) {
       }
     }
     const s = sampleClip(clip, pb.time)
+
+    // The touch nearest to now, if one is within the window.
+    let touch: (typeof touches)[number] | null = null
+    for (const c of touches) {
+      if (Math.abs(pb.time - c.t) < TOUCH_WINDOW_S && (!touch || Math.abs(pb.time - c.t) < Math.abs(pb.time - touch.t))) touch = c
+    }
+    let touchSide: 1 | -1 = 1
 
     const vel = velocities(clip, pb.time)
     const turn = 1 - Math.exp(-TURN_DAMPING * Math.min(delta, 0.1))
@@ -200,14 +234,59 @@ export function Replay({ clip, playback, ball, onEnded }: ReplayProps) {
         animateDive(rig, k, dive.side, dive.strength)
       } else {
         animateRig(rig, (distanceAt(clip, dist[id], pb.time) / STRIDE_M) * Math.PI * 2, speed)
+        if (touch && touch.p === id) {
+          const k = pb.time - touch.t
+          const e = 1 - (k / TOUCH_WINDOW_S) ** 2
+          // Turn to play the ball.
+          if (touch.dir) {
+            const want = Math.atan2(-touch.dir[0], touch.dir[1])
+            g.rotation.y = yaw.current[id] + angleDelta(yaw.current[id], want) * e
+          }
+          // Which foot: the one PFF logged, else the one on the ball's side.
+          touchSide = touch.b === 'L' ? -1 : 1
+          if (touch.b === 'F' && s.ball) {
+            const rx = Math.cos(g.rotation.y)
+            const rz = -Math.sin(g.rotation.y)
+            touchSide = (s.ball[0] - x) * rx + -(s.ball[1] - y) * rz >= 0 ? 1 : -1
+          }
+          animateTouch(rig, k, TOUCH_WINDOW_S, touch.b, touchSide)
+        }
       }
     }
 
     if (ball.current) {
       ball.current.visible = s.ball !== null
+      const mat = ball.current.material as THREE.MeshStandardMaterial
+      mat.opacity = estimated[frameIndexAt(clip.frames, pb.time)] ? ESTIMATED_BALL_OPACITY : 1
       if (s.ball) {
         const [x, y, z] = s.ball
         ball.current.position.set(x, Math.max(z, 0) + BALL_RADIUS, -y)
+      }
+
+      // Pull the ball onto the foot, head or hands of whoever touches it, so the
+      // contact is visible: fully at the moment of the touch, easing off either side.
+      const g = touch && players.current[touch.p]
+      const rig = touch && rigs.current[touch.p]
+      if (touch && g && rig) {
+        g.updateMatrixWorld(true)
+        const fx = -Math.sin(g.rotation.y)
+        const fz = -Math.cos(g.rotation.y)
+        if (touch.b === 'H') {
+          rig.head.getWorldPosition(touchPoint)
+          touchPoint.y += 0.11 + BALL_RADIUS
+        } else if (touch.b === 'X') {
+          touchPoint.set(g.position.x + fx * 0.45, 1.35, g.position.z + fz * 0.45)
+        } else {
+          ;(touchSide > 0 ? rig.footR : rig.footL).getWorldPosition(touchPoint)
+          touchPoint.x += fx * 0.16
+          touchPoint.z += fz * 0.16
+          touchPoint.y = Math.max(touchPoint.y, 0) + BALL_RADIUS * 0.8
+        }
+        const w = smooth(1 - Math.abs(pb.time - touch.t) / TOUCH_WINDOW_S)
+        ballPoint.copy(ball.current.position)
+        if (!s.ball) ballPoint.copy(touchPoint)
+        ball.current.position.lerpVectors(ballPoint, touchPoint, w)
+        ball.current.visible = true
       }
     }
   })
@@ -254,7 +333,7 @@ export function Replay({ clip, playback, ball, onEnded }: ReplayProps) {
       ))}
       <mesh ref={ball} castShadow>
         <sphereGeometry args={[BALL_RADIUS, 24, 16]} />
-        <meshStandardMaterial color="white" roughness={0.35} />
+        <meshStandardMaterial color="white" roughness={0.35} transparent />
       </mesh>
     </group>
   )

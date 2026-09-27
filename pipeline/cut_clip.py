@@ -12,6 +12,8 @@ from collections import deque
 from pathlib import Path
 
 from goal_mouth import correct_goal_mouth
+from contacts import find_contacts
+from estimate_gaps import estimate_gaps
 from goals import clip_name, find_goals
 
 RAW = Path("data/raw")
@@ -311,9 +313,10 @@ def load_match(game_id):
     return meta, roster, events
 
 
-def build_clip(meta, roster, goal, frames, goal_index, override=None):
+def build_clip(meta, roster, goal, frames, goal_index, override=None, events=None):
     """Turn one goal's raw tracking window into the clip dict. goal is a find_goals
-    entry; override is its overrides.json entry, if any."""
+    entry; override is its overrides.json entry, if any; events (the match's event
+    list) gives every touch of the ball for the viewer."""
     pitch = meta["stadium"]["pitches"][0]
     length, width = pitch["length"], pitch["width"]
     by_shirt = {(r["team"]["id"], r["shirtNumber"]): r for r in roster}
@@ -347,7 +350,10 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None):
     ball_source, auto_source = pick_ball_source(raw_distance, override)
     other = "raw" if ball_source == "smoothed" else "smoothed"
     chosen, borrowed = borrow_gaps(paths[ball_source], paths[other], goal_index)
-    ball, correction = correct_goal_mouth(fill_gaps(chosen), times, goal_index)
+    # Where the ball is still missing before the shot, estimate it from where it
+    # was last seen, where it reappears and who is near it (see estimate_gaps.py).
+    chosen, estimated = estimate_gaps(fill_gaps(chosen), times, player_frames, goal_index)
+    ball, correction = correct_goal_mouth(chosen, times, goal_index)
     ball, jumps = smooth_jumps(ball, times)
     missing_ball = sum(p is None for p in paths[ball_source])
 
@@ -384,6 +390,8 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None):
         "goalT": out_frames[goal_index]["t"],
         "ballSource": ball_source,
         "ballCorrected": correction["corrected"],
+        "ballEstimated": estimated,  # [first, last] frame ranges where the ball position is estimated
+        "contacts": find_contacts(events or [], [f["videoTimeMs"] for f in frames], set(players)),
         "needsReview": correction["needs_review"],
         "teams": {"home": team_meta("home"), "away": team_meta("away")},
         "players": list(players.values()),
@@ -404,6 +412,7 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None):
         "max_ball_speed": max_ball_speed(ball, times),
         "borrowed": borrowed,
         "jumps_smoothed": jumps,
+        "estimated_frames": sum(b - a + 1 for a, b in estimated),
     }
     return clip, stats
 
@@ -435,7 +444,7 @@ def main():
         sys.exit(f"{game_event_id} is not a goal in game {game_id}")
     frames, goal_index = read_window(RAW / "tracking" / f"{game_id}.jsonl.bz2", game_event_id)
     override = load_overrides().get(clip_name(goal))
-    clip, stats = build_clip(meta, roster, goal, frames, goal_index, override)
+    clip, stats = build_clip(meta, roster, goal, frames, goal_index, override, events)
     write_clip(clip, out_path)
     c = stats["correction"]
     print(f"frames {stats['first_frame']}..{stats['last_frame']}: {stats['frames']}")

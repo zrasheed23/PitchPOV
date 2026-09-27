@@ -14,7 +14,12 @@ export interface Rig {
   shoulderR: THREE.Group
   elbowL: THREE.Group
   elbowR: THREE.Group
+  footL: THREE.Object3D // boots and head: where the ball meets the player
+  footR: THREE.Object3D
+  head: THREE.Object3D
 }
+
+export const RIG_PARTS = 12
 
 // Pose the rig for a running phase (radians) at a given speed (m/s).
 export function animateRig(rig: Rig, phase: number, speed: number) {
@@ -83,4 +88,38 @@ export function animateDive(rig: Rig, k: number, side: 1 | -1, strength: number)
   rig.hipR.rotation.x = bend * 0.6
   rig.kneeL.rotation.x = -bend * 1.4
   rig.kneeR.rotation.x = -bend * 1.1
+}
+
+// A touch of the ball, `k` seconds from the moment of contact (negative before),
+// within a window of `w` seconds either side. Layered on top of the running pose.
+// part: R/L/F foot (F = either; `side` picks the leg), H head, X hands.
+export function animateTouch(rig: Rig, k: number, w: number, part: string, side: 1 | -1) {
+  const s = Math.min(Math.max(k / w, -1), 1) // -1 .. 0 (contact) .. 1
+  const e = 1 - s * s // 0 at the window edges, 1 at contact
+  if (part === 'H') {
+    // Jump into it and nod through the ball.
+    rig.body.position.y += 0.28 * e
+    rig.body.rotation.x = -0.35 * e * (s < 0 ? 1 + s : 1 - s * 0.5)
+    rig.shoulderL.rotation.x = rig.shoulderR.rotation.x = -0.4 * e
+    return
+  }
+  if (part === 'X') {
+    // Hands out in front (throw-in, keeper).
+    rig.shoulderL.rotation.x = rig.shoulderR.rotation.x = 1.5 * e
+    rig.elbowL.rotation.x = rig.elbowR.rotation.x = 0.3 * e
+    return
+  }
+  // Foot: back-swing, then swing through the ball; the standing leg stays planted.
+  const kick = side > 0 ? rig.hipR : rig.hipL
+  const kickKnee = side > 0 ? rig.kneeR : rig.kneeL
+  const plant = side > 0 ? rig.hipL : rig.hipR
+  const plantKnee = side > 0 ? rig.kneeL : rig.kneeR
+  const swing = 0.3 + 1.0 * s // behind the body before contact, just ahead of it at contact, through after
+  kick.rotation.x = kick.rotation.x * (1 - e) + swing * e
+  kickKnee.rotation.x = kickKnee.rotation.x * (1 - e) - Math.max(0, -s) * 1.4 * e
+  plant.rotation.x *= 1 - e
+  plantKnee.rotation.x = plantKnee.rotation.x * (1 - e) - 0.15 * e
+  // Arms out for balance.
+  rig.shoulderL.rotation.z = -0.12 - 0.5 * e
+  rig.shoulderR.rotation.z = 0.12 + 0.5 * e
 }

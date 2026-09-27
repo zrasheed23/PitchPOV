@@ -66,7 +66,7 @@ def process_game(game_id, overrides):
             skipped.append((goal, "no tracking", reason))
             continue
         frames, goal_index = windows[goal["gameEventId"]]
-        clip, stats = build_clip(meta, roster, goal, frames, goal_index, overrides.get(clip_name(goal)))
+        clip, stats = build_clip(meta, roster, goal, frames, goal_index, overrides.get(clip_name(goal)), events)
         write_clip(clip, CLIPS / clip_name(goal))
         results.append((goal, stats))
     return meta, goals, results, problems, skipped
@@ -163,6 +163,10 @@ def report(matches, results, problems, skipped, n_games):
             print(f"ball carried in after it vanished near goal: {len(carried)}")
             for g, c in sorted(carried, key=lambda gc: -gc[1]["carried"]):
                 print(f"  {clip_name(g)}  {g['scorer']} {g['clock']}  {c['carried']:.1f} m")
+        est = [(g, s["estimated_frames"]) for g, s in results if s.get("estimated_frames")]
+        total_frames = sum(s["frames"] for _, s in results)
+        print(f"ball estimated where the tracking lost it: {len(est)} clips, "
+              f"{100 * sum(n for _, n in est) / total_frames:.1f}% of all frames")
         review = [(g, review_reasons(s)) for g, s in results if review_reasons(s)]
         print(f"review list (needsReview, shift > {BIG_SHIFT_M:.0f} m, or raw at "
               f"{REVIEW_RAW_M:.0f}-{RAW_BALL_MAX_M:.0f} m): {len(review)}")

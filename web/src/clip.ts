@@ -43,6 +43,8 @@ export interface Clip {
   goalT: number
   ballSource: 'smoothed' | 'raw' // which PFF ball feed the pipeline picked
   ballCorrected: boolean // the pipeline moved the post-shot ball path so it goes in
+  contacts?: { f: number; p: string; b: string }[] // every touch: frame, player id, body part (R/L/F foot, H head, X hands)
+  ballEstimated?: [number, number][] // frame ranges where the tracking lost the ball and the pipeline estimated it
   needsReview: boolean // the ball never gets near the goal and was left as tracked
   teams: Record<TeamSide, Team>
   players: Player[]
