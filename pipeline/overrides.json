@@ -114,7 +114,8 @@
   },
   "3812_6498461.json": {
     "ballSource": "smoothed",
-    "note": "raw path never reaches the goal; trying smoothed + goal-mouth correction"
+    "note": "raw path never reaches the goal; trying smoothed + goal-mouth correction; synthesized header checked by eye",
+    "reviewed": true
   },
   "3812_6498837.json": {
     "ballSource": "smoothed",
@@ -123,7 +124,8 @@
   },
   "3829_6536289.json": {
     "ballSource": "smoothed",
-    "note": "raw path never reaches the goal; trying smoothed + goal-mouth correction"
+    "note": "raw path never reaches the goal; trying smoothed + goal-mouth correction; synthesized header checked by eye",
+    "reviewed": true
   },
   "3835_6546769.json": {
     "ballSource": "smoothed",
@@ -131,7 +133,8 @@
   },
   "3841_6573355.json": {
     "ballSource": "smoothed",
-    "note": "raw path never reaches the goal; trying smoothed + goal-mouth correction"
+    "note": "raw path never reaches the goal; trying smoothed + goal-mouth correction; synthesized header checked by eye",
+    "reviewed": true
   },
   "10512_6667234.json": {
     "ballSource": "smoothed",
