@@ -41,6 +41,7 @@ def read_windows(tracking_path, game_event_ids, before_s=BEFORE_S, after_s=AFTER
     buffer = deque()
     open_windows = {}  # id -> (goal_time, frames, goal_index)
     done = {}
+    last_ms = None
     with bz2.open(tracking_path, "rt") as f:
         for line in f:
             frame = json.loads(line)
@@ -49,6 +50,15 @@ def read_windows(tracking_path, game_event_ids, before_s=BEFORE_S, after_s=AFTER
             if frame.get("videoTimeMs") is None:
                 continue
             t = frame["videoTimeMs"] / 1000
+            if last_ms is not None and frame["videoTimeMs"] <= last_ms:
+                # PFF repeats a frame's video time around some events (up to ~15 frames
+                # with the same timestamp and the ball wobbling). Keep only the first;
+                # if the goal is tagged on a repeat, the window opens at the kept frame.
+                eid = frame.get("game_event_id")
+                if eid in wanted and eid not in open_windows and eid not in done:
+                    open_windows[eid] = (buffer[-1]["videoTimeMs"] / 1000, list(buffer), len(buffer) - 1)
+                continue
+            last_ms = frame["videoTimeMs"]
             buffer.append(frame)
             while buffer[0]["videoTimeMs"] / 1000 < t - before_s:
                 buffer.popleft()
@@ -150,6 +160,114 @@ def drop_repeats(path, max_run=2):
     return out
 
 
+OUT_OF_PLAY_M = 3.0  # this far past a touchline or goal line, the tracking has lost the ball
+
+
+def drop_out_of_play(path, end):
+    """Blank ball positions well outside the pitch before the shot (frame `end`).
+    Both feeds sometimes latch onto something else for a second or two: in
+    Saudi Arabia v Argentina (52:43) the raw ball flies 5 m past the goal line
+    and 13 m up, then loops back to the shooter. A real ball that far out would
+    mean a restart, so treat those frames as missing and let the other feed or
+    the gap fill cover them."""
+    out = list(path)
+    for i in range(min(end, len(out))):
+        b = out[i]
+        if b is not None and (abs(b[0]) > PITCH_LENGTH / 2 + OUT_OF_PLAY_M or abs(b[1]) > PITCH_WIDTH / 2 + OUT_OF_PLAY_M):
+            out[i] = None
+    return out
+
+
+BORROW_BLEND = 9  # frames over which a borrowed stretch eases onto the chosen feed
+BORROW_MAX_OFFSET_M = 4.0
+
+
+def borrow_gaps(primary, secondary, end):
+    """Fill long gaps (longer than fill_gaps bridges) in the chosen ball feed with
+    the other feed, for frames before `end` (the shot). PFF's two feeds often
+    lose the ball at different times, so this keeps the ball on screen during the
+    build-up instead of vanishing for seconds. Where the feeds disagree, the
+    borrowed stretch is shifted to meet the chosen feed at both ends, easing in
+    over BORROW_BLEND frames, so there's no jump at the seams.
+    Returns (path, number of frames borrowed)."""
+    out = list(primary)
+    borrowed = 0
+    i = 0
+    while i < end:
+        if out[i] is not None:
+            i += 1
+            continue
+        j = i
+        while j < len(out) and out[j] is None:
+            j += 1
+        if j - i > MAX_GAP_FRAMES:
+            def offset(k):
+                if 0 <= k < len(primary) and primary[k] is not None and secondary[k] is not None:
+                    return tuple(p - s for p, s in zip(primary[k], secondary[k]))
+                return None
+            left, right = offset(i - 1), offset(j)
+            if any(o is not None and math.hypot(o[0], o[1]) > BORROW_MAX_OFFSET_M for o in (left, right)):
+                i = j  # the feeds disagree by metres here: easing between them would look like a fast slide
+                continue
+            for k in range(i, min(j, end)):
+                s = secondary[k]
+                if s is None:
+                    continue
+                wl = max(0.0, 1 - (k - i + 1) / BORROW_BLEND) if left else 0.0
+                wr = max(0.0, 1 - (j - k) / BORROW_BLEND) if right else 0.0
+                v = list(s)
+                for d in range(3):
+                    v[d] += (left[d] * wl if left else 0.0) + (right[d] * wr if right else 0.0)
+                v[2] = max(v[2], 0.0)
+                out[k] = tuple(v)
+                borrowed += 1
+        i = j
+    return out, borrowed
+
+
+JUMP_MPS = 40.0  # faster than this between two frames is a tracking jump, not a kick
+GLIDE_MPS = 25.0  # replace a jump with a glide at about this speed
+MAX_GLIDE_HALF_S = 1.5
+
+
+def smooth_jumps(ball, times):
+    """Replace teleports with a glide. When the tracking re-finds the ball it can
+    jump 10-40 m in one or two frames (hundreds of m/s on screen). Spread each
+    jump over enough frames to cover it at GLIDE_MPS, centred on the jump, by
+    interpolating between the nearest real positions either side.
+    Returns (path, number of jumps smoothed)."""
+    out = list(ball)
+    present = [i for i, b in enumerate(out) if b is not None]
+    fixed = 0
+    k = 1
+    while k < len(present):
+        p, i = present[k - 1], present[k]
+        dt = times[i] - times[p]
+        d = math.dist(out[p], out[i])
+        if dt <= 0 or d / dt <= JUMP_MPS:
+            k += 1
+            continue
+        # Widen the window until the glide across it is no faster than GLIDE_MPS
+        # (jumps often come in pairs, so the far side can be further than d).
+        half = d / GLIDE_MPS / 2
+        while True:
+            lo = next((present[m] for m in range(k - 1, -1, -1) if times[present[m]] <= times[p] - half), present[0])
+            hi = next((present[m] for m in range(k, len(present)) if times[present[m]] >= times[i] + half), present[-1])
+            span = times[hi] - times[lo]
+            wide_enough = span > 0 and math.dist(out[lo], out[hi]) / span <= GLIDE_MPS * 1.2
+            if wide_enough or (lo == present[0] and hi == present[-1]) or half > MAX_GLIDE_HALF_S:
+                break
+            half += 0.1
+        a, b = out[lo], out[hi]
+        for m in range(lo + 1, hi):
+            w = (times[m] - times[lo]) / span if span > 0 else 1.0
+            out[m] = tuple(av + (bv - av) * w for av, bv in zip(a, b))
+        fixed += 1
+        present = [m for m, b in enumerate(out) if b is not None]
+        k = next((n for n, m in enumerate(present) if m > hi), len(present))
+    return out, fixed
+
+
 def raw_ball_distance(raw_path, team_positions, goal_index):
     """Distance from the gap-filled raw ball at goalFrame to the nearest of
     team_positions [(x, y), ...], or None if there's no raw ball there."""
@@ -224,16 +342,19 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None):
     times = [(frame["videoTimeMs"] - frames[0]["videoTimeMs"]) / 1000 for frame in frames]
     # The scorer's team: for an own goal that's the conceding player on the ball.
     team = [xy for pid, xy in player_frames[goal_index].items() if players[pid]["team"] == goal["side"]]
-    paths = {source: ball_path(frames, source, length, width) for source in BALL_SOURCES}
+    paths = {source: drop_out_of_play(ball_path(frames, source, length, width), goal_index) for source in BALL_SOURCES}
     raw_distance = raw_ball_distance(paths["raw"], team, goal_index)
     ball_source, auto_source = pick_ball_source(raw_distance, override)
-    ball, correction = correct_goal_mouth(fill_gaps(paths[ball_source]), times, goal_index)
+    other = "raw" if ball_source == "smoothed" else "smoothed"
+    chosen, borrowed = borrow_gaps(paths[ball_source], paths[other], goal_index)
+    ball, correction = correct_goal_mouth(fill_gaps(chosen), times, goal_index)
+    ball, jumps = smooth_jumps(ball, times)
     missing_ball = sum(p is None for p in paths[ball_source])
 
     out_frames = []
     for t, b, ps in zip(times, ball, player_frames):
         out_frames.append({
-            "t": round(t, 2),
+            "t": round(t, 3),  # 2 decimals made frame gaps alternate 0.03/0.04 s: a visible 10 Hz judder
             "b": [round(v, 2) for v in b] if b is not None else None,
             "p": {pid: [round(x, 2), round(y, 2)] for pid, (x, y) in ps.items()},
         })
@@ -280,8 +401,23 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None):
         "auto_source": auto_source,
         "override": override,
         "coverage": {src: sum(p is not None for p in path) / len(path) for src, path in paths.items()},
+        "max_ball_speed": max_ball_speed(ball, times),
+        "borrowed": borrowed,
+        "jumps_smoothed": jumps,
     }
     return clip, stats
+
+
+def max_ball_speed(ball, times, window=3):
+    """Fastest the ball moves (m/s) over any `window` frames. Real shots top out
+    around 35 m/s; much more means the tracking skipped or compressed a pass."""
+    best = 0.0
+    for i in range(window, len(ball)):
+        a, b = ball[i - window], ball[i]
+        dt = times[i] - times[i - window]
+        if a is not None and b is not None and dt > 0:
+            best = max(best, math.dist(a, b) / dt)
+    return best
 
 
 def write_clip(clip, out_path):

@@ -72,7 +72,7 @@ export function attackingSide(clip: Clip): 1 | -1 {
 }
 
 // Index of the last frame with frame.t <= t (clamped to the clip).
-function frameIndexAt(frames: Frame[], t: number): number {
+export function frameIndexAt(frames: Frame[], t: number): number {
   let lo = 0
   let hi = frames.length - 1
   if (t <= frames[lo].t) return lo

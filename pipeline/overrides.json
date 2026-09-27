@@ -161,5 +161,9 @@
     "ballSource": "raw",
     "reviewed": true,
     "note": "reviewed on the 2D review sheet: looks right"
+  },
+  "3816_6502181.json": {
+    "ballSource": "smoothed",
+    "note": "raw ball flies 5 m past the goal line and 13 m up before the shot (tracking error); smoothed follows Romero's clearance dropping to Al-Dawsari"
   }
 }

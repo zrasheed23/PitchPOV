@@ -9,6 +9,7 @@ import { Controls } from './Controls'
 import { GoalPicker } from './GoalPicker'
 import { type GoalEntry, scoreLabel } from './goals'
 import { Pitch } from './Pitch'
+import { Stadium } from './Stadium'
 import type { Playback } from './playback'
 import { Replay } from './Replay'
 
@@ -37,12 +38,16 @@ export default function App() {
   const [view, setView] = useState<View>({ preset: 'broadcast', seq: 0 })
   const [pickerOpen, setPickerOpen] = useState(false)
   const [povId, setPovId] = useState<string | null>(null)
+  const closePicker = useCallback(() => setPickerOpen(false), [])
   const ball = useRef<THREE.Mesh>(null)
+  if (import.meta.env.DEV) (window as unknown as { __playback: unknown }).__playback = playback
 
   // Load a goal's clip, then start it from the top with the default camera.
   const loadGoal = useCallback((g: GoalEntry) => {
     const id = ++request.current
     setGoal(g)
+    // Link straight to this goal: /#10517_6738550
+    history.replaceState(null, '', `#${g.clip.replace(/\.json$/, '')}`)
     setLoading(true)
     setError(null)
     fetchJson<Clip>(CLIPS_URL + g.clip)
@@ -64,7 +69,8 @@ export default function App() {
     fetchJson<GoalEntry[]>(CLIPS_URL + 'index.json')
       .then((idx) => {
         setIndex(idx)
-        if (idx.length) loadGoal(idx[0])
+        const linked = idx.find((g) => `#${g.clip.replace(/\.json$/, '')}` === location.hash)
+        if (idx.length) loadGoal(linked ?? idx[0])
         else setLoading(false)
       })
       .catch((e: Error) => {
@@ -134,10 +140,27 @@ export default function App() {
 
   return (
     <>
-      <Canvas camera={{ position: [0, 40, 70], fov: 40, near: 0.5, far: 500 }}>
-        <color attach="background" args={['#1b2a1b']} />
-        <ambientLight intensity={0.8} />
-        <directionalLight position={[30, 60, 40]} intensity={1.8} />
+      <Canvas shadows dpr={[1, 2]} camera={{ position: [0, 40, 70], fov: 40, near: 0.3, far: 600 }}>
+        <color attach="background" args={['#0c1424']} />
+        <fog attach="fog" args={['#0c1424', 140, 320]} />
+        <hemisphereLight args={['#dfe8ff', '#2a3a2a', 0.9]} />
+        {/* Floodlights: one strong key light for shadows, one softer fill from the other side. */}
+        <directionalLight
+          position={[-40, 90, 50]}
+          intensity={2.2}
+          castShadow
+          shadow-mapSize={[2048, 2048]}
+          shadow-camera-left={-70}
+          shadow-camera-right={70}
+          shadow-camera-top={50}
+          shadow-camera-bottom={-50}
+          shadow-camera-near={10}
+          shadow-camera-far={250}
+          shadow-bias={-0.0004}
+          shadow-normalBias={0.02}
+        />
+        <directionalLight position={[50, 70, -40]} intensity={0.7} />
+        <Stadium crowdColors={clip ? [clip.teams.home.color, clip.teams.away.color] : []} />
         <Pitch />
         {clip && (
           <>
@@ -158,7 +181,7 @@ export default function App() {
           zoomSpeed={0.35}
           rotateSpeed={0.6}
           minDistance={8}
-          maxDistance={130}
+          maxDistance={160}
         />
       </Canvas>
 
@@ -179,23 +202,24 @@ export default function App() {
         </div>
         {index.length > 0 && (
           <button type="button" className="toggle-picker" onClick={() => setPickerOpen((o) => !o)}>
-            {pickerOpen ? 'Close' : 'Change goal'}
+            Browse goals
           </button>
         )}
-        {index.length > 0 && (
-          // Hidden rather than unmounted, so search and the review filter survive closing.
-          <div className="picker-wrap" hidden={!pickerOpen}>
-            <GoalPicker
-              index={index}
-              current={goal}
-              onPick={(g) => {
-                setPickerOpen(false)
-                loadGoal(g)
-              }}
-            />
-          </div>
-        )}
       </div>
+
+      {index.length > 0 && (
+        // Hidden rather than unmounted, so the search survives closing.
+        <GoalPicker
+          index={index}
+          current={goal}
+          open={pickerOpen}
+          onClose={closePicker}
+          onPick={(g) => {
+            setPickerOpen(false)
+            loadGoal(g)
+          }}
+        />
+      )}
 
       {povId && clip && (
         <div className="pov-note">

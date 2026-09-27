@@ -1,5 +1,5 @@
 import { useFrame, useThree } from '@react-three/fiber'
-import { type RefObject, useEffect, useRef } from 'react'
+import { type RefObject, useCallback, useEffect, useRef } from 'react'
 import * as THREE from 'three'
 import type { Preset, View } from './camera'
 
@@ -65,6 +65,10 @@ export function CameraRig({ view, attackSide, ball, onManual, onPlayerView }: Ca
   const scene = useThree((s) => s.scene)
   const gl = useThree((s) => s.gl)
   const controls = useThree((s) => s.controls) as unknown as Controls | null
+  // Dev-only handle for screenshots and debugging from the console.
+  useEffect(() => {
+    if (import.meta.env.DEV) (window as unknown as { __view: unknown }).__view = { camera, controls }
+  }, [camera, controls])
 
   const active = useRef<Preset | null>(null)
   const transition = useRef<{ elapsed: number; fromPos: THREE.Vector3; fromTarget: THREE.Vector3 } | null>(null)
@@ -83,13 +87,14 @@ export function CameraRig({ view, attackSide, ball, onManual, onPlayerView }: Ca
   const pov = useRef<{ id: string; group: THREE.Group; elapsed: number; fromPos: THREE.Vector3; look: THREE.Vector3 } | null>(
     null,
   )
-  const endPov = () => {
+  const endPov = useCallback(() => {
     if (!pov.current) return
     pov.current.group.visible = true
     pov.current = null
     if (controls) controls.enabled = true
     onPlayerView(null)
-  }
+  }, [controls, onPlayerView])
+
 
   useEffect(() => {
     active.current = view.preset
@@ -97,7 +102,7 @@ export function CameraRig({ view, attackSide, ball, onManual, onPlayerView }: Ca
     focus.current = null // a preset click cancels a double-click zoom in flight
     endPov()
     transition.current = { elapsed: 0, fromPos: camera.position.clone(), fromTarget: controls.target.clone() }
-  }, [view, camera, controls])
+  }, [view, camera, controls, endPov])
 
   // A drag or wheel on the canvas hands the camera back to the user.
   useEffect(() => {
@@ -170,7 +175,7 @@ export function CameraRig({ view, attackSide, ball, onManual, onPlayerView }: Ca
       window.removeEventListener('pointerup', onUp)
       el.removeEventListener('wheel', manual)
     }
-  }, [gl, camera, scene, controls, onManual, onPlayerView])
+  }, [gl, camera, scene, controls, onManual, onPlayerView, endPov])
 
   useFrame((_, delta) => {
     if (!controls) return

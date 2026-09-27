@@ -1,3 +1,5 @@
+import type { JSX } from 'react'
+import { useMemo } from 'react'
 import * as THREE from 'three'
 
 // Pitch in three.js space: pitch x -> three x, pitch y -> three -z, up is +y.
@@ -22,7 +24,38 @@ const POST_R = 0.06
 const NET_DEPTH = 2.2 // the pipeline rests the ball 2 m behind the line
 
 const lineMat = <meshBasicMaterial color="white" />
-const netMat = <meshBasicMaterial color="white" transparent opacity={0.18} side={THREE.DoubleSide} depthWrite={false} />
+
+// Net mesh drawn on a canvas: a see-through grid of white cords.
+function netTexture(): THREE.CanvasTexture {
+  const c = document.createElement('canvas')
+  c.width = c.height = 64
+  const ctx = c.getContext('2d')!
+  ctx.strokeStyle = 'rgba(255,255,255,0.85)'
+  ctx.lineWidth = 4
+  ctx.strokeRect(0, 0, 64, 64)
+  const tex = new THREE.CanvasTexture(c)
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping
+  tex.anisotropy = 4
+  return tex
+}
+const NET_CELL = 0.12 // metres per mesh square
+let netTex: THREE.CanvasTexture | null = null
+
+function NetPanel({ w, h, ...props }: { w: number; h: number } & JSX.IntrinsicElements['mesh']) {
+  const tex = useMemo(() => {
+    netTex ??= netTexture()
+    const t = netTex.clone()
+    t.repeat.set(w / NET_CELL, h / NET_CELL)
+    t.needsUpdate = true
+    return t
+  }, [w, h])
+  return (
+    <mesh {...props}>
+      <planeGeometry args={[w, h]} />
+      <meshBasicMaterial map={tex} transparent alphaTest={0.3} side={THREE.DoubleSide} depthWrite={false} />
+    </mesh>
+  )
+}
 
 // Axis-aligned line segment between two pitch points.
 function Segment({ x1, y1, x2, y2 }: { x1: number; y1: number; x2: number; y2: number }) {
@@ -74,29 +107,20 @@ function Goal({ side }: { side: 1 | -1 }) {
   return (
     <group>
       {[hw, -hw].map((z) => (
-        <mesh key={z} position={[x, GOAL_HEIGHT / 2, z]}>
+        <mesh key={z} position={[x, GOAL_HEIGHT / 2, z]} castShadow>
           <cylinderGeometry args={[POST_R, POST_R, GOAL_HEIGHT, 12]} />
-          <meshStandardMaterial color="white" />
+          <meshStandardMaterial color="white" roughness={0.4} />
         </mesh>
       ))}
-      <mesh position={[x, GOAL_HEIGHT, 0]} rotation-x={Math.PI / 2}>
+      <mesh position={[x, GOAL_HEIGHT, 0]} rotation-x={Math.PI / 2} castShadow>
         <cylinderGeometry args={[POST_R, POST_R, GOAL_WIDTH + POST_R * 2, 12]} />
         <meshStandardMaterial color="white" />
       </mesh>
-      {/* Net: back, roof, and sides as faint see-through panels. */}
-      <mesh position={[x + side * NET_DEPTH, GOAL_HEIGHT / 2, 0]} rotation-y={Math.PI / 2}>
-        <planeGeometry args={[GOAL_WIDTH, GOAL_HEIGHT]} />
-        {netMat}
-      </mesh>
-      <mesh position={[x + (side * NET_DEPTH) / 2, GOAL_HEIGHT, 0]} rotation-x={Math.PI / 2}>
-        <planeGeometry args={[NET_DEPTH, GOAL_WIDTH]} />
-        {netMat}
-      </mesh>
+      {/* Net: back, roof and sides */}
+      <NetPanel w={GOAL_WIDTH} h={GOAL_HEIGHT} position={[x + side * NET_DEPTH, GOAL_HEIGHT / 2, 0]} rotation-y={Math.PI / 2} />
+      <NetPanel w={NET_DEPTH} h={GOAL_WIDTH} position={[x + (side * NET_DEPTH) / 2, GOAL_HEIGHT, 0]} rotation-x={Math.PI / 2} />
       {[hw, -hw].map((z) => (
-        <mesh key={z} position={[x + (side * NET_DEPTH) / 2, GOAL_HEIGHT / 2, z]}>
-          <planeGeometry args={[NET_DEPTH, GOAL_HEIGHT]} />
-          {netMat}
-        </mesh>
+        <NetPanel key={z} w={NET_DEPTH} h={GOAL_HEIGHT} position={[x + (side * NET_DEPTH) / 2, GOAL_HEIGHT / 2, z]} />
       ))}
     </group>
   )
@@ -107,11 +131,6 @@ export function Pitch() {
   const dAngle = Math.acos((BOX_DEPTH - SPOT_DIST) / CIRCLE_R)
   return (
     <group>
-      <mesh rotation-x={-Math.PI / 2}>
-        <planeGeometry args={[LENGTH + 16, WIDTH + 12]} />
-        <meshStandardMaterial color="#3a7d3a" />
-      </mesh>
-
       {/* Touchlines, goal lines, halfway line */}
       <Segment x1={-HALF_L} y1={HALF_W} x2={HALF_L} y2={HALF_W} />
       <Segment x1={-HALF_L} y1={-HALF_W} x2={HALF_L} y2={-HALF_W} />

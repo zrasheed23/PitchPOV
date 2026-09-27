@@ -1,3 +1,4 @@
+import math
 import bz2
 import json
 import sys
@@ -118,3 +119,62 @@ def test_drop_repeats_keeps_a_ball_at_rest():
     spot, kicked = (41.5, 0.0, 0.0), (43.0, 0.5, 0.2)
     path = [spot] * 30 + [kicked]
     assert drop_repeats(path) == path
+
+
+def test_read_windows_drops_frames_that_repeat_a_video_time(tmp_path):
+    # 10 fps; frames 51-55 repeat frame 50's time, and the goal is tagged on one of the repeats.
+    path = tmp_path / "t.jsonl.bz2"
+    with bz2.open(path, "wt") as f:
+        for i in range(120):
+            ms = 5000 if 50 <= i <= 55 else (i * 100 if i < 50 else (i - 5) * 100)
+            eid = 111 if i == 53 else None
+            f.write(json.dumps({"frameNum": i, "videoTimeMs": ms, "game_event_id": eid}) + "\n")
+    frames, goal_index = read_windows(path, [111], before_s=3, after_s=2)[111]
+    times = [fr["videoTimeMs"] for fr in frames]
+    assert times == sorted(set(times))  # strictly increasing, no repeats
+    assert frames[goal_index]["frameNum"] == 50  # the kept copy of the tagged time
+
+
+def test_borrow_gaps_fills_long_gaps_from_the_other_feed_without_seams():
+    from cut_clip import MAX_GAP_FRAMES, borrow_gaps
+    n = 60
+    other = [(float(i), 0.0, 0.0) for i in range(n)]
+    # Chosen feed agrees with the other but is 1 m higher in y, and loses the ball for 30 frames.
+    chosen = [(float(i), 1.0, 0.0) if not 10 <= i < 40 else None for i in range(n)]
+    out, borrowed = borrow_gaps(chosen, other, end=n)
+    assert borrowed == 30 > MAX_GAP_FRAMES
+    assert all(b is not None for b in out)
+    # Next to the seams the borrowed ball is shifted onto the chosen feed (y close to 1).
+    assert abs(out[10][1] - 1.0) < 0.2 and abs(out[39][1] - 1.0) < 0.2
+    # In the middle it follows the other feed.
+    assert out[25] == other[25]
+    # Nothing after `end` is touched.
+    out2, _ = borrow_gaps(chosen, other, end=5)
+    assert out2[20] is None
+
+
+def test_drop_out_of_play_blanks_the_ball_far_outside_the_pitch_before_the_shot():
+    from cut_clip import drop_out_of_play
+    path = [(50.0, 0.0, 0.0), (57.0, 9.0, 4.7), (40.0, 36.0, 1.0), (54.0, 1.0, 0.2), (56.0, 0.0, 0.0)]
+    # Frames 0-3 are before the shot; frame 4 is the ball in the net and stays.
+    assert drop_out_of_play(path, end=4) == [(50.0, 0.0, 0.0), None, (40.0, 36.0, 1.0), (54.0, 1.0, 0.2), (56.0, 0.0, 0.0)]
+
+
+def test_smooth_jumps_turns_a_teleport_into_a_glide():
+    from cut_clip import GLIDE_MPS, JUMP_MPS, smooth_jumps
+    times = [i / 30 for i in range(90)]
+    # Ball rolling slowly, then the tracking jumps it 20 m in one frame.
+    ball = [(i * 0.1, 0.0, 0.0) for i in range(45)] + [(20 + i * 0.1, 0.0, 0.0) for i in range(45)]
+    out, fixed = smooth_jumps(ball, times)
+    assert fixed == 1
+    speeds = [math.dist(a, b) / (tb - ta) for a, b, ta, tb in zip(out, out[1:], times, times[1:])]
+    assert max(speeds) < JUMP_MPS
+    assert max(speeds) > GLIDE_MPS * 0.8  # still covers the distance, just not instantly
+    assert out[0] == ball[0] and out[-1] == ball[-1]
+
+
+def test_smooth_jumps_leaves_normal_play_alone():
+    from cut_clip import smooth_jumps
+    times = [i / 30 for i in range(60)]
+    ball = [(i * 0.9, 0.0, 0.3) for i in range(60)]  # a 27 m/s shot
+    assert smooth_jumps(ball, times) == (ball, 0)

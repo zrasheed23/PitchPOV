@@ -21,6 +21,7 @@ CLIPS = Path("clips")
 EXPECTED_GOALS = 172  # 2022 World Cup goals, excluding shootouts
 BIG_SHIFT_M = 3.0
 REVIEW_RAW_M = 6.0  # raw source chosen this close to RAW_BALL_MAX_M: worth a look
+FAST_BALL_MPS = 55.0  # faster than any real kick: the ball will zip unnaturally
 
 
 def game_ids():
@@ -81,6 +82,8 @@ def review_reasons(stats):
         reasons.append(f"ball doesn't go in ({c['reason']})")
     if (stats.get("override") or {}).get("reviewed"):
         return reasons
+    if stats.get("max_ball_speed", 0) > FAST_BALL_MPS:
+        reasons.append(f"ball moves at {stats['max_ball_speed']:.0f} m/s")
     if c["reason"] == "synthesized":
         reasons.append(f"shot path synthesized ({c['carried']:.1f} m)")
     if c["shift"] > BIG_SHIFT_M:
