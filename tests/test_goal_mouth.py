@@ -187,3 +187,15 @@ def test_logged_height_band_moves_the_crossing_height_into_it():
     out, info = correct_goal_mouth(ball, times, GOAL, {"height": "BOTTOMTHIRD"})
     assert info["corrected"] is False
     assert out[: GOAL + 30] == ball[: GOAL + 30]
+
+
+def test_a_goal_line_clearance_crosses_at_the_aimed_point_and_is_still_cleared():
+    ball, times = clearance(51.4, y=1.0)
+    out, info = correct_goal_mouth(ball, times, GOAL, {"y": -2.0, "z": 0.5})
+    assert info["reason"] == "clearance"
+    assert info["track_shift"] == pytest.approx(GOAL_LINE_X + MARGIN - 51.4)
+    c = max(range(len(out)), key=lambda i: out[i][0])
+    assert out[c][0] == pytest.approx(GOAL_LINE_X + MARGIN)
+    assert (out[c][1], out[c][2]) == (pytest.approx(-2.0), pytest.approx(0.5))
+    assert out[: GOAL + 1] == ball[: GOAL + 1]
+    assert out[c + 16 :] == ball[c + 16 :]  # back on the real path after the clearance

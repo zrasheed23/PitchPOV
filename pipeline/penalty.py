@@ -79,8 +79,9 @@ def keeper_on_line(xy, side):
 
 
 def find_keeper(player_frames, kick, side, goalkeepers):
-    """The goalkeeper (of either team: PFF sometimes swaps the teams' labels)
-    standing nearest the goal at the kick, or None if none is near it."""
+    """The goalkeeper standing nearest the goal at the kick, or None if none is
+    near it. Either team's: a label swap PFF has that cut_clip doesn't undo
+    yet shouldn't move the man in goal out of the area."""
     at = player_frames[kick]
     near = [(abs(at[pid][0] - side * GOAL_LINE_X), pid) for pid in goalkeepers if pid in at]
     near = [(d, pid) for d, pid in near if d <= KEEPER_MAX_M]

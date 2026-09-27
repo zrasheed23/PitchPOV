@@ -5,15 +5,17 @@ To cut every goal in the tournament, use build_all.py.
 """
 
 import bz2
+import itertools
 import json
 import math
 import sys
 from collections import deque
+from functools import lru_cache
 from pathlib import Path
 
 from goal_mouth import correct_goal_mouth, goal_side
 from ball_flight import anchor_frames, count_kinks, straighten_free_flight
-from ball_physics import apply_physics
+from ball_physics import MIN_FLIGHT_S, apply_physics
 from contacts import align_contacts, find_contacts
 from dribble import rebuild_dribbles
 from estimate_gaps import estimate_gaps
@@ -22,6 +24,7 @@ from penalty import find_keeper, pin_ball, place_players
 
 RAW = Path("data/raw")
 OVERRIDES = Path(__file__).resolve().parent / "overrides.json"
+SHOT_PLACEMENT = Path(__file__).resolve().parent / "shot_placement.json"  # written by shot_placement.py
 BEFORE_S = 15.0
 AFTER_S = 6.5  # goalT is the shot; the ball crosses the line ~1.3 s later
 MAX_GAP_FRAMES = 15  # fill ball gaps up to ~0.5 s; longer gaps stay null
@@ -29,6 +32,16 @@ PITCH_LENGTH = 105.0
 PITCH_WIDTH = 68.0
 BALL_SOURCES = ("raw", "smoothed")
 RAW_BALL_MAX_M = 8.0  # use raw unless its ball is farther than this from every scoring-team player at the shot
+# Periods where PFF's tracking puts each team's positions under the other
+# team's labels, for the whole period (see player_lists): the keepers defend
+# the wrong goals for the metadata's extra-time ends, and 79-90% of logged
+# touches are nearer the other team's player with that shirt number (2-13% in
+# the other periods, spread evenly).
+SWAPPED_PERIODS = {"10517": {3, 4}, "10506": {3, 4}}  # the final, Japan v Croatia: all of extra time
+# Where each positionGroupType plays (across, up the pitch), to pair up labels by role.
+ROLE_SPOT = {"GK": (0, -10), "LCB": (-1, 1), "MCB": (0, 1), "RCB": (1, 1), "LB": (-2, 1.5), "RB": (2, 1.5),
+             "LWB": (-2, 2), "RWB": (2, 2), "DM": (0, 2), "CM": (0, 2.5), "AM": (0, 3),
+             "LW": (-2, 3.5), "RW": (2, 3.5), "CF": (0, 4)}
 
 
 def load_json(path):
@@ -123,6 +136,53 @@ def fill_gaps(values, max_gap=MAX_GAP_FRAMES):
 def to_standard_pitch(x, y, length, width):
     """Scale centered coordinates from a length × width pitch to 105 × 68."""
     return x * PITCH_LENGTH / length, y * PITCH_WIDTH / width
+
+
+@lru_cache(maxsize=None)
+def label_pairing(home_numbers, away_numbers, roles):
+    """{home shirt number: away shirt number} pairing the two teams' players on
+    the pitch: the same number where both teams have it, the rest by position
+    (least total distance between their ROLE_SPOTs). roles: tuple of
+    ((side, number), positionGroupType)."""
+    role = dict(roles)
+    pair = {n: n for n in home_numbers if n in away_numbers}
+    left_h = [n for n in home_numbers if n not in pair]
+    left_a = [n for n in away_numbers if n not in pair]
+
+    def cost(h, a):
+        return math.dist(ROLE_SPOT.get(role.get(("home", h)), (0, 2.5)), ROLE_SPOT.get(role.get(("away", a)), (0, 2.5)))
+
+    if len(left_h) > len(left_a):
+        left_h, left_a, flip = left_a, left_h, True
+        cost_ = lambda x, y: cost(y, x)
+    else:
+        flip, cost_ = False, cost
+    best = min(itertools.permutations(left_a, len(left_h)),
+               key=lambda perm: sum(cost_(x, y) for x, y in zip(left_h, perm)), default=())
+    for x, y in zip(left_h, best):
+        pair[y if flip else x] = x if flip else y
+    return pair
+
+
+def player_lists(frame, game_id, roles=()):
+    """{"home": [...], "away": [...]}: the frame's players, undoing PFF's swap in
+    SWAPPED_PERIODS. There each list's shirt numbers are its own team's players
+    on the pitch (they change at that team's substitutions) but the positions
+    are the other team's: the positions under home #10 are away #10's. Where
+    the other team has no such number, labels pair up by position (GK with GK,
+    LCB with LCB, CF with CF: see label_pairing), which is what the logged
+    touches show. roles: ((side, number), positionGroupType) pairs."""
+    home = frame.get("homePlayersSmoothed") or []
+    away = frame.get("awayPlayersSmoothed") or []
+    if frame.get("period") not in SWAPPED_PERIODS.get(str(game_id), ()):
+        return {"home": home, "away": away}
+    h_nums = tuple(sorted({p["jerseyNum"] for p in home}, key=str))
+    a_nums = tuple(sorted({p["jerseyNum"] for p in away}, key=str))
+    pair = label_pairing(h_nums, a_nums, roles)
+    back = {a: h for h, a in pair.items()}
+    # Entries with no partner (a substitution frame where one list has 12) are dropped.
+    return {"home": [{**p, "jerseyNum": back[p["jerseyNum"]]} for p in away if p["jerseyNum"] in back],
+            "away": [{**p, "jerseyNum": pair[p["jerseyNum"]]} for p in home if p["jerseyNum"] in pair]}
 
 
 def ball_position(frame, source="smoothed"):
@@ -234,16 +294,22 @@ def borrow_gaps(primary, secondary, end):
 JUMP_MPS = 40.0  # faster than this between two frames is a tracking jump, not a kick
 GLIDE_MPS = 25.0  # replace a jump with a glide at about this speed
 MAX_GLIDE_HALF_S = 1.5
+LOST_TAIL_FRAMES = 15  # a jump followed by at most this many frames and then no ball at all is dropped
 
 
-def smooth_jumps(ball, times):
+def smooth_jumps(ball, times, end=None, start=0):
     """Replace teleports with a glide. When the tracking re-finds the ball it can
     jump 10-40 m in one or two frames (hundreds of m/s on screen). Spread each
     jump over enough frames to cover it at GLIDE_MPS, centred on the jump, by
-    interpolating between the nearest real positions either side.
+    interpolating between the nearest real positions either side. A jump the
+    feed makes just before losing the ball for good (after a goal-line
+    clearance) has nothing to glide to: those last frames are dropped. Only
+    frames from `start` to `end` (default: all) are looked at or changed.
     Returns (path, number of jumps smoothed)."""
     out = list(ball)
-    present = [i for i, b in enumerate(out) if b is not None]
+    last = len(out) - 1 if end is None else min(end, len(out) - 1)
+    final = max((n for n, b in enumerate(out) if b is not None), default=-1)  # the clip's last ball
+    present = [i for i, b in enumerate(out) if b is not None and start <= i <= last]
     fixed = 0
     k = 1
     while k < len(present):
@@ -264,12 +330,17 @@ def smooth_jumps(ball, times):
             if wide_enough or (lo == present[0] and hi == present[-1]) or half > MAX_GLIDE_HALF_S:
                 break
             half += 0.1
+        if not wide_enough and hi == present[-1] == final and hi - i < LOST_TAIL_FRAMES:
+            for m in range(i, hi + 1):
+                out[m] = None
+            fixed += 1
+            break
         a, b = out[lo], out[hi]
         for m in range(lo + 1, hi):
             w = (times[m] - times[lo]) / span if span > 0 else 1.0
             out[m] = tuple(av + (bv - av) * w for av, bv in zip(a, b))
         fixed += 1
-        present = [m for m, b in enumerate(out) if b is not None]
+        present = [m for m, b in enumerate(out) if b is not None and start <= m <= last]
         k = next((n for n, m in enumerate(present) if m > hi), len(present))
     return out, fixed
 
@@ -281,22 +352,30 @@ SHOT_BLEND_FRAMES = 6  # ease the simulated shot onto the height where it crosse
 MIN_SHOT_MPS = {"H": 11.0, "X": 8.0}  # headers, hands; everything else is a kick
 MIN_KICK_MPS = 20.0
 MIN_SHOT_S = 0.25
+# ...and one faster than this is a feed jumping to the goal (de Jong v Qatar:
+# 23 m in 7 frames); it is stretched to this speed. The hardest shots average ~35 m/s.
+MAX_SHOT_MPS = 35.0
 
 
 def retime_shot(ball, times, goal_index, cross, part):
     """If the ball takes too long from the shot to the line, move the crossing
-    earlier so the shot flies at the minimum speed for its body part. The path in
-    between is the tracked one squeezed in time (so its shape and peak stay), and
+    earlier so the shot flies at the minimum speed for its body part; if it gets
+    there faster than MAX_SHOT_MPS, move it later. The path in between is the
+    tracked one squeezed or stretched in time (so its shape and peak stay), and
     everything after the crossing (the ball in the net) plays from the new
     crossing on. Returns (ball, new cross frame)."""
     d = math.dist(ball[goal_index][:2], ball[cross][:2])
     took = times[cross] - times[goal_index]
     floor = MIN_SHOT_MPS.get(part, MIN_KICK_MPS)
     want = max(d / floor, MIN_SHOT_S)
-    if took <= want:
+    if took < d / MAX_SHOT_MPS:
+        want = d / MAX_SHOT_MPS
+    elif took <= want:
         return ball, cross
     t_new = times[goal_index] + want
-    new_cross = next((i for i in range(goal_index + 1, cross + 1) if times[i] >= t_new), cross)
+    new_cross = next((i for i in range(goal_index + 1, len(ball)) if times[i] >= t_new), len(ball) - 1)
+    if new_cross == cross:
+        return ball, cross
     old = list(ball)
     out = list(ball)
 
@@ -323,12 +402,14 @@ def physics_shot(ball, times, goal_index, part=None):
                   if ball[i] is not None and side * ball[i][0] >= PITCH_LENGTH / 2), None)
     if cross is None or ball[goal_index] is None:
         return ball, 0
-    # Fly to the last frame before the line: the frame past it is already on the
-    # way into the net, which can bend toward the middle near a post.
-    if cross - 1 > goal_index and ball[cross - 1] is not None:
-        cross -= 1
     if all(ball[k] is not None for k in range(goal_index, cross + 1)):
         ball, cross = retime_shot(ball, times, goal_index, cross, part)
+    # Fly to the last frame before the line: the frame past it is already on the
+    # way into the net, which can bend toward the middle near a post. (Unless that
+    # makes the flight too short for the solver.)
+    if (cross - 1 > goal_index and ball[cross - 1] is not None
+            and times[cross - 1] - times[goal_index] >= MIN_FLIGHT_S):
+        cross -= 1
     before = list(ball)
     out, n = apply_physics(ball, times, [goal_index, cross], cross)
     if not n:
@@ -380,6 +461,28 @@ def load_overrides(path=OVERRIDES):
     return overrides
 
 
+def load_shot_placement(path=SHOT_PLACEMENT):
+    """{clip file name: {"y", "z"}}: where StatsBomb has each goal crossing the line."""
+    return load_json(path) if path.exists() else {}
+
+
+def shot_aim(goal, placement=None, override=None):
+    """Where the goal-mouth correction aims the crossing (see goal_mouth.aim_point),
+    and where that came from: a hand-set aim in overrides.json wins, then
+    StatsBomb's end location, then PFF's height third."""
+    hand = (override or {}).get("aim")
+    if placement:
+        aim, source = dict(placement), "statsbomb"
+    elif goal.get("shotHeight"):
+        aim, source = {"height": goal["shotHeight"]}, "pff height"
+    else:
+        aim, source = {}, None
+    if hand:
+        aim.update(hand)
+        source = "override"
+    return aim, source
+
+
 def pick_ball_source(raw_distance, override=None):
     """(source, automatic choice): an override's ballSource wins over choose_ball_source."""
     auto = choose_ball_source(raw_distance)
@@ -393,21 +496,25 @@ def load_match(game_id):
     return meta, roster, events
 
 
-def build_clip(meta, roster, goal, frames, goal_index, override=None, events=None):
+def build_clip(meta, roster, goal, frames, goal_index, override=None, events=None, placement=None):
     """Turn one goal's raw tracking window into the clip dict. goal is a find_goals
     entry; override is its overrides.json entry, if any; events (the match's event
-    list) gives every touch of the ball for the viewer."""
+    list) gives every touch of the ball for the viewer; placement is its
+    shot_placement.json entry, if any."""
     pitch = meta["stadium"]["pitches"][0]
     length, width = pitch["length"], pitch["width"]
     by_shirt = {(r["team"]["id"], r["shirtNumber"]): r for r in roster}
     sides = {"home": meta["homeTeam"], "away": meta["awayTeam"]}
 
+    roles = tuple(sorted(((side, r["shirtNumber"]), r["positionGroupType"])
+                         for side, team in sides.items() for r in roster if r["team"]["id"] == team["id"]))
     players = {}
     player_frames = []
     for frame in frames:
         positions = {}
+        lists = player_lists(frame, meta["id"], roles)
         for side, team in sides.items():
-            for p in frame.get(f"{side}PlayersSmoothed") or []:
+            for p in lists[side]:
                 r = by_shirt.get((team["id"], p["jerseyNum"]))
                 if r is None:
                     raise ValueError(f"no roster entry for {team['name']} #{p['jerseyNum']}")
@@ -443,11 +550,15 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         keeper = find_keeper(player_frames, goal_index, side,
                              [pid for pid, p in players.items() if p["position"] == "GK" and pid != goal["scorerId"]])
         player_frames, moved = place_players(player_frames, times, goal_index, side, goal["scorerId"], keeper)
-    aim = dict((override or {}).get("aim") or {})
-    if goal.get("shotHeight"):
-        aim["height"] = goal["shotHeight"]
+    aim, aim_source = shot_aim(goal, placement, override)
     ball, correction = correct_goal_mouth(chosen, times, goal_index, aim)
-    ball, jumps = smooth_jumps(ball, times)
+    # Only up to the shot: after it the path is the correction's (and physics_shot
+    # re-flies the shot), and a glide there would undo where the correction aims it.
+    # After a goal-line clearance the tracked ball plays on: smooth that part too.
+    ball, jumps = smooth_jumps(ball, times, end=goal_index)
+    if correction.get("cleared_after") is not None:
+        ball, after = smooth_jumps(ball, times, start=correction["cleared_after"])
+        jumps += after
     # The ball only changes direction when someone touches it: straighten it between touches.
     contacts = find_contacts(events or [], [f["videoTimeMs"] for f in frames], set(players))
     if penalty:  # the ball sits on the spot: nothing touches it before the kick
@@ -549,7 +660,8 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         "carries": len(carries),
         "kinks": (kinks_before, kinks_after),
         "penalty_moved": moved,
-        "aim_override": "aim" in (override or {}),
+        "aim_source": aim_source,
+        "aim": aim,
     }
     return clip, stats
 
@@ -581,7 +693,8 @@ def main():
         sys.exit(f"{game_event_id} is not a goal in game {game_id}")
     frames, goal_index = read_window(RAW / "tracking" / f"{game_id}.jsonl.bz2", game_event_id)
     override = load_overrides().get(clip_name(goal))
-    clip, stats = build_clip(meta, roster, goal, frames, goal_index, override, events)
+    clip, stats = build_clip(meta, roster, goal, frames, goal_index, override, events,
+                             load_shot_placement().get(clip_name(goal)))
     write_clip(clip, out_path)
     c = stats["correction"]
     print(f"frames {stats['first_frame']}..{stats['last_frame']}: {stats['frames']}")

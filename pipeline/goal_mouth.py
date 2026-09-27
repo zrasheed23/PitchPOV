@@ -138,11 +138,16 @@ def _find_clearance(ball, start, end, side):
     return None
 
 
-def _shift_over_line(ball, times, c, goal_index, side):
-    """Shift the path around frame c so ball[c] is MARGIN over the line,
-    easing in and out over CLEARANCE_BLEND_S (never before the shot).
-    Returns the shift in metres."""
+def _shift_over_line(ball, times, c, goal_index, side, aim=None):
+    """Shift the path around frame c so ball[c] is MARGIN over the line (and,
+    given an aim with a y or z, at the aimed point across and up), easing in
+    and out over CLEARANCE_BLEND_S (never before the shot).
+    Returns (the whole shift, the part over the line) in metres."""
     dx = side * (GOAL_LINE_X + MARGIN) - ball[c][0]
+    _, yc, zc = ball[c]
+    aim = aim or {}
+    ty, tz = aim_point(yc, zc, aim) if {"y", "z"} & set(aim) else (yc, zc)
+    dy, dz = ty - yc, tz - zc
     before = min(CLEARANCE_BLEND_S, times[c] - times[goal_index])
     for i in range(goal_index, len(ball)):
         if ball[i] is None:
@@ -153,8 +158,8 @@ def _shift_over_line(ball, times, c, goal_index, side):
             continue
         w = 0.5 * (1 + math.cos(math.pi * d / half)) if half > 0 else 1.0
         x, y, z = ball[i]
-        ball[i] = (x + dx * w, y, z)
-    return abs(dx)
+        ball[i] = (x + dx * w, y + dy * w, max(z + dz * w, 0.0))
+    return math.hypot(dx, dy, dz), abs(dx)
 
 
 def _carry_in(ball, times, j, side, aim=None):
@@ -184,11 +189,12 @@ def correct_goal_mouth(ball, times, goal_index, aim=None):
                           clearance), not moving it to the logged height or
                           a hand-set aim,
            "carried": metres of path invented after the ball vanished,
-           "needs_review": True when the path was left alone and won't go in}.
+           "needs_review": True when the path was left alone and won't go in,
+           "cleared_after": for a clearance, the first frame back on the tracked path}.
     """
     ball = list(ball)
     info = {"corrected": False, "reason": None, "shift": 0.0, "track_shift": 0.0, "carried": 0.0,
-            "needs_review": False}
+            "needs_review": False, "cleared_after": None}
     start = next((i for i in range(goal_index, -1, -1) if ball[i] is not None), None)
     if start is None:
         info["reason"] = "no ball"
@@ -201,7 +207,9 @@ def correct_goal_mouth(ball, times, goal_index, aim=None):
     c = _find_clearance(ball, start, end, side)
     if c is not None:
         info.update(corrected=True, reason="clearance")
-        info["shift"] = info["track_shift"] = _shift_over_line(ball, times, c, goal_index, side)
+        info["shift"], info["track_shift"] = _shift_over_line(ball, times, c, goal_index, side, aim)
+        info["cleared_after"] = next((i for i in range(c, len(ball)) if times[i] - times[c] > CLEARANCE_BLEND_S),
+                                     len(ball) - 1)
         return ball, info
 
     crossing = _find_crossing(ball, times, start, side)

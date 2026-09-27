@@ -4,6 +4,14 @@ Usage: python pipeline/build_all.py [--jobs N]
 
 Writes clips/{gameId}_{gameEventId}.json per goal and clips/index.json, then
 prints a validation report.
+
+Shot placement comes from pipeline/shot_placement.json, which
+shot_placement.py writes from clips/index.json and the clips. On a fresh
+checkout (or after goals are added or removed) run:
+    python pipeline/build_all.py
+    python pipeline/shot_placement.py
+    python pipeline/build_all.py
+The report lists clips with no placement.
 """
 
 import argparse
@@ -13,8 +21,8 @@ from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
-from cut_clip import (BALL_SOURCES, OVERRIDES, RAW, RAW_BALL_MAX_M, build_clip, load_match, load_overrides,
-                      read_windows, write_clip)
+from cut_clip import (BALL_SOURCES, OVERRIDES, RAW, RAW_BALL_MAX_M, SHOT_PLACEMENT, build_clip, load_match,
+                      load_overrides, load_shot_placement, read_windows, write_clip)
 from goals import build_index, clip_name, find_goals
 
 CLIPS = Path("clips")
@@ -36,7 +44,7 @@ def game_ids():
     return ids
 
 
-def process_game(game_id, overrides):
+def process_game(game_id, overrides, placements):
     """Cut every goal in one match (one pass over its tracking file).
 
     Returns (meta, goals, results, problems, skipped); skipped lists
@@ -66,7 +74,9 @@ def process_game(game_id, overrides):
             skipped.append((goal, "no tracking", reason))
             continue
         frames, goal_index = windows[goal["gameEventId"]]
-        clip, stats = build_clip(meta, roster, goal, frames, goal_index, overrides.get(clip_name(goal)), events)
+        name = clip_name(goal)
+        clip, stats = build_clip(meta, roster, goal, frames, goal_index, overrides.get(name), events,
+                                 placements.get(name))
         write_clip(clip, CLIPS / clip_name(goal))
         results.append((goal, stats))
     return meta, goals, results, problems, skipped
@@ -164,11 +174,17 @@ def report(matches, results, problems, skipped, n_games):
             print(f"ball carried in after it vanished near goal: {len(carried)}")
             for g, c in sorted(carried, key=lambda gc: -gc[1]["carried"]):
                 print(f"  {clip_name(g)}  {g['scorer']} {g['clock']}  {c['carried']:.1f} m")
-        aimed = [(g, s) for g, s in results if s.get("aim_override")]
-        print(f"crossing point set in {OVERRIDES.name}: {len(aimed)}")
-        for g, s in aimed:
-            print(f"  {clip_name(g)}  {g['scorer']} {g['clock']}  {s['override']['aim']}, "
-                  f"moved {s['correction']['shift']:.1f} m")
+        aim_sources = Counter(s["aim_source"] or "none" for _, s in results)
+        print("crossing aimed from: " + ", ".join(f"{k} {v}" for k, v in sorted(aim_sources.items())))
+        for g, s in results:
+            if s["aim_source"] == "override":
+                print(f"  set in {OVERRIDES.name}: {clip_name(g)}  {g['scorer']} {g['clock']}  {s['aim']}, "
+                      f"moved {s['correction']['shift']:.1f} m")
+        unplaced = [g for g, s in results if s["aim_source"] != "statsbomb"]
+        print(f"no StatsBomb placement in {SHOT_PLACEMENT.name}: {len(unplaced)}"
+              + (" (own goals have none; run shot_placement.py if goals changed)" if unplaced else ""))
+        for g in unplaced:
+            print(f"  {clip_name(g)}  {g['scorer']} {g['clock']}{'  (own goal)' if g['ownGoal'] else ''}")
         pens = [(g, s) for g, s in results if g.get("penalty")]
         print(f"penalties (ball on the spot, players set up legally until the kick): {len(pens)}")
         for g, s in pens:
@@ -204,10 +220,11 @@ def main():
 
     ids = game_ids()
     overrides = load_overrides()
+    placements = load_shot_placement()
     print(f"{len(ids)} matches in {RAW}")
     matches, results, problems, skipped = [], [], [], []
     with ProcessPoolExecutor(max_workers=min(args.jobs, len(ids) or 1)) as pool:
-        per_game = pool.map(process_game, ids, [overrides] * len(ids))
+        per_game = pool.map(process_game, ids, [overrides] * len(ids), [placements] * len(ids))
         for game_id, (meta, goals, game_results, game_problems, game_skipped) in zip(ids, per_game):
             print(f"  {game_id} {meta['homeTeam']['shortName']} v {meta['awayTeam']['shortName']}: "
                   f"{len(goals)} goals")
