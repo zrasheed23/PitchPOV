@@ -164,3 +164,26 @@ def test_synthesized_header_brings_a_high_ball_down_to_head_height():
     # Eased down over the frames before the header, not snapped.
     assert out[GOAL - 5][2] > HEADER_Z and out[GOAL - 30][2] == pytest.approx(4.4)
     assert_rests_in_net(out)
+
+
+def test_aim_moves_the_crossing_to_a_set_point_without_a_jump():
+    ball, times = path((52.5, 0.2, 0.4), vanish_at=GOAL + 35)  # down the middle
+    out, info = correct_goal_mouth(ball, times, GOAL, {"y": -3.2})
+    assert info["reason"] == "aimed" and info["shift"] == pytest.approx(3.4)
+    assert crossing_point(out)[1] == pytest.approx(-3.2)
+    assert out[: GOAL + 1] == ball[: GOAL + 1]
+    steps = [math.dist(a, b) for a, b in zip(out[GOAL - 1 : GOAL + 30], out[GOAL : GOAL + 31])]
+    assert max(steps) < 0.6
+    assert_rests_in_net(out)
+
+
+def test_logged_height_band_moves_the_crossing_height_into_it():
+    ball, times = path((52.5, 1.0, 0.3))
+    out, info = correct_goal_mouth(ball, times, GOAL, {"height": "TOPTHIRD"})
+    assert info["reason"] == "aimed"
+    assert crossing_point(out)[2] == pytest.approx(2 * BAR_Z / 3)
+    assert crossing_point(out)[1] == pytest.approx(1.0)  # no left/right from PFF: y stays
+    # Already in its band: left alone.
+    out, info = correct_goal_mouth(ball, times, GOAL, {"height": "BOTTOMTHIRD"})
+    assert info["corrected"] is False
+    assert out[: GOAL + 30] == ball[: GOAL + 30]

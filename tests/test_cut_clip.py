@@ -178,3 +178,19 @@ def test_smooth_jumps_leaves_normal_play_alone():
     times = [i / 30 for i in range(60)]
     ball = [(i * 0.9, 0.0, 0.3) for i in range(60)]  # a 27 m/s shot
     assert smooth_jumps(ball, times) == (ball, 0)
+
+
+def test_a_slow_tracked_shot_is_retimed_to_a_real_shot_speed():
+    from cut_clip import retime_shot
+    times = [i / 30 for i in range(120)]
+    # Shot at frame 10 from 18 m out, tracked gliding to the line in 2 s (9 m/s), then 1 m into the net.
+    ball = [(34.5, 0.0, 0.1)] * 11 + [(34.5 + 18 * (k / 60), 0.0, 1.0) for k in range(1, 61)] + \
+           [(52.5 + min((k + 1) / 20, 1.0), 0.0, 1.0) for k in range(49)]
+    out, cross = retime_shot(ball, times, 10, 70, "R")
+    assert abs((times[cross] - times[10]) - 0.9) < 0.05  # 18 m at 20 m/s
+    assert out[cross] == ball[70]  # still crosses where it did
+    assert out[cross + 5] == ball[75]  # and the ball in the net plays on from there
+    # A header is allowed to be slower; a shot that's already fast isn't touched.
+    assert retime_shot(ball, times, 10, 70, "H")[1] < 70
+    fast = ball[:11] + [(34.5 + 18 * (k / 20), 0.0, 1.0) for k in range(1, 21)] + ball[71:]
+    assert retime_shot(fast, times, 10, 30, "R")[1] == 30

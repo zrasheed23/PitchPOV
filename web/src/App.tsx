@@ -1,7 +1,8 @@
 import { OrbitControls } from '@react-three/drei'
 import { Canvas } from '@react-three/fiber'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type * as THREE from 'three'
+import { buildBallTrack } from './ballTrack'
 import { type Clip, attackingSide, clipDuration } from './clip'
 import { PRESETS, type View } from './camera'
 import { CameraRig } from './CameraRig'
@@ -9,6 +10,7 @@ import { Controls } from './Controls'
 import { GoalPicker } from './GoalPicker'
 import { type GoalEntry, scoreLabel } from './goals'
 import { Pitch } from './Pitch'
+import { buildBroadcastCam, buildPlayCam } from './playCam'
 import { Stadium } from './Stadium'
 import type { Playback } from './playback'
 import { Replay } from './Replay'
@@ -40,6 +42,9 @@ export default function App() {
   const [povId, setPovId] = useState<string | null>(null)
   const closePicker = useCallback(() => setPickerOpen(false), [])
   const ball = useRef<THREE.Mesh>(null)
+  const track = useMemo(() => (clip ? buildBallTrack(clip) : null), [clip])
+  const broadcastCam = useMemo(() => (clip && track ? buildBroadcastCam(clip, track) : null), [clip, track])
+  const playCam = useMemo(() => (clip && track ? buildPlayCam(clip, track, attackingSide(clip)) : null), [clip, track])
   if (import.meta.env.DEV) (window as unknown as { __playback: unknown }).__playback = playback
 
   // Load a goal's clip, then start it from the top with the default camera.
@@ -140,7 +145,7 @@ export default function App() {
 
   return (
     <>
-      <Canvas shadows dpr={[1, 2]} camera={{ position: [0, 40, 70], fov: 40, near: 0.3, far: 600 }}>
+      <Canvas shadows dpr={[1, 1.5]} camera={{ position: [0, 40, 70], fov: 40, near: 0.3, far: 600 }}>
         <color attach="background" args={['#0c1424']} />
         <fog attach="fog" args={['#0c1424', 140, 320]} />
         <hemisphereLight args={['#dfe8ff', '#2a3a2a', 0.9]} />
@@ -162,13 +167,16 @@ export default function App() {
         <directionalLight position={[50, 70, -40]} intensity={0.7} />
         <Stadium crowdColors={clip ? [clip.teams.home.color, clip.teams.away.color] : []} />
         <Pitch />
-        {clip && (
+        {clip && track && playCam && broadcastCam && (
           <>
-            <Replay key={clip.gameEventId} clip={clip} playback={playback} ball={ball} onEnded={onEnded} />
+            <Replay key={clip.gameEventId} clip={clip} track={track} playback={playback} ball={ball} onEnded={onEnded} />
             <CameraRig
               view={view}
               attackSide={attackingSide(clip)}
               ball={ball}
+              playCam={playCam}
+              broadcastCam={broadcastCam}
+              playback={playback}
               onManual={onManualCamera}
               onPlayerView={setPovId}
             />

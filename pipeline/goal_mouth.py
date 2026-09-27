@@ -21,6 +21,12 @@ short of it. For the post-shot path:
   ball's first ~0.25 s of travel when that points at the goal, else at the
   nearest point of the goal mouth. Reported as "synthesized" so it can be
   checked by eye.
+
+Where the ball crosses is aimed (`aim`): PFF logs the third of the goal's
+height a shot went in at (shotInitialHeightType), so the crossing height is
+moved into that band if it's outside it. PFF has no left/right placement; a
+hand-set crossing y (and z) from overrides.json wins for clips where the
+tracking puts the ball in the wrong place (Mbappé's volley in the final).
 """
 
 import math
@@ -41,6 +47,25 @@ AIM_LOOKAHEAD_S = 0.25  # how much of the real post-shot path sets the aim
 HEADER_MAX_Z = 2.3  # a ball higher than this at the shot can't be touching the scorer
 HEADER_Z = 1.7  # ball height at a header (the viewer's players are 1.8 m tall)
 HEADER_BLEND_S = 0.6  # lower the incoming ball to head height over this long
+# shotInitialHeightType -> the ball's height range as it crosses the line.
+HEIGHT_BANDS = {
+    "G": (0.0, 0.25),
+    "BOTTOMTHIRD": (0.0, BAR_Z / 3),
+    "MIDDLETHIRD": (BAR_Z / 3, 2 * BAR_Z / 3),
+    "TOPTHIRD": (2 * BAR_Z / 3, BAR_Z - MARGIN),
+}
+
+
+def aim_point(y, z, aim=None):
+    """Where a ball crossing the line at (y, z) should cross: just inside the
+    posts and under the bar, in the logged height band, or at a hand-set point.
+    aim: {"height": shotInitialHeightType, "y": metres, "z": metres}, all optional."""
+    aim = aim or {}
+    max_y = POST_Y - MARGIN
+    y = min(max(aim.get("y", y), -max_y), max_y)
+    lo, hi = HEIGHT_BANDS.get(aim.get("height"), (0.0, BAR_Z - MARGIN))
+    z = min(max(aim.get("z", z), lo), hi)
+    return y, min(max(z, 0.0), BAR_Z - MARGIN)
 
 
 def goal_side(ball, goal_index):
@@ -132,13 +157,12 @@ def _shift_over_line(ball, times, c, goal_index, side):
     return abs(dx)
 
 
-def _carry_in(ball, times, j, side):
+def _carry_in(ball, times, j, side, aim=None):
     """Carry the ball in a straight line at CARRY_SPEED from frame j to 0.3 m
-    inside the nearest post and under the bar. Returns the same tuple as
-    _find_crossing."""
-    max_y = POST_Y - MARGIN
+    inside the nearest post and under the bar (or the aim). Returns the same
+    tuple as _find_crossing."""
     x, y, z = ball[j]
-    target = (side * GOAL_LINE_X, min(max(y, -max_y), max_y), min(z, BAR_Z - MARGIN))
+    target = (side * GOAL_LINE_X, *aim_point(y, z, aim))
     t_cross = times[j] + math.dist(ball[j], target) / CARRY_SPEED
     k = j + 1
     while k < len(ball) and times[k] < t_cross:
@@ -148,18 +172,23 @@ def _carry_in(ball, times, j, side):
     return k, t_cross, target
 
 
-def correct_goal_mouth(ball, times, goal_index):
+def correct_goal_mouth(ball, times, goal_index, aim=None):
     """Return (corrected ball list, info). ball is a list of (x, y, z) or None.
+    aim: see aim_point.
 
     info: {"corrected": bool,
-           "reason": None | "wide" | "high" | "clearance" | "short"
+           "reason": None | "wide" | "high" | "aimed" | "clearance" | "short"
                      | "synthesized" | "no ball",
            "shift": metres the crossing (or clearance) point moved,
+           "track_shift": the part of that fixing the tracking (wide, high,
+                          clearance), not moving it to the logged height or
+                          a hand-set aim,
            "carried": metres of path invented after the ball vanished,
            "needs_review": True when the path was left alone and won't go in}.
     """
     ball = list(ball)
-    info = {"corrected": False, "reason": None, "shift": 0.0, "carried": 0.0, "needs_review": False}
+    info = {"corrected": False, "reason": None, "shift": 0.0, "track_shift": 0.0, "carried": 0.0,
+            "needs_review": False}
     start = next((i for i in range(goal_index, -1, -1) if ball[i] is not None), None)
     if start is None:
         info["reason"] = "no ball"
@@ -172,18 +201,18 @@ def correct_goal_mouth(ball, times, goal_index):
     c = _find_clearance(ball, start, end, side)
     if c is not None:
         info.update(corrected=True, reason="clearance")
-        info["shift"] = _shift_over_line(ball, times, c, goal_index, side)
+        info["shift"] = info["track_shift"] = _shift_over_line(ball, times, c, goal_index, side)
         return ball, info
 
     crossing = _find_crossing(ball, times, start, side)
     if crossing is None:
         j = max(i for i in range(start, len(ball)) if ball[i] is not None)
         if j == len(ball) - 1 or goal_mouth_distance(ball[j], side) > MAX_CARRY_M:
-            k, t_cross, point = _synthesize_shot(ball, times, start, side)
+            k, t_cross, point = _synthesize_shot(ball, times, start, side, aim)
             info.update(corrected=True, reason="synthesized", carried=math.dist(ball[start], point))
             _into_net(ball, times, k, t_cross, point, side)
             return ball, info
-        k, t_cross, point = _carry_in(ball, times, j, side)
+        k, t_cross, point = _carry_in(ball, times, j, side, aim)
         info.update(corrected=True, reason="short", carried=math.dist(ball[j], point))
         _into_net(ball, times, k, t_cross, point, side)
         return ball, info
@@ -195,17 +224,28 @@ def correct_goal_mouth(ball, times, goal_index):
         info["reason"] = "high"
 
     _, yc, zc = point
+    ty, tz = aim_point(yc, zc, aim)
+    if not info["reason"]:
+        # Already inside the goal mouth: only move it to where it was aimed.
+        aim = aim or {}
+        ty = ty if "y" in aim else yc
+        tz = tz if "z" in aim or aim.get("height") in HEIGHT_BANDS else zc
+    dy, dz = ty - yc, tz - zc
+    if not info["reason"] and math.hypot(dy, dz) > 0.01:
+        info["reason"] = "aimed"
     if info["reason"]:
         info["corrected"] = True
-        max_y = POST_Y - MARGIN
-        dy = min(max(yc, -max_y), max_y) - yc
-        dz = min(zc, BAR_Z - MARGIN) - zc
         info["shift"] = math.hypot(dy, dz)
+        if info["reason"] != "aimed":
+            by, bz = aim_point(yc, zc)
+            info["track_shift"] = math.hypot(by - yc, bz - zc)
         t0 = times[goal_index]
+        # Full shift by the last frame before the line, so the ball crosses where it's aimed.
+        t1 = max((times[i] for i in range(goal_index, k) if times[i] < t_cross), default=t_cross)
         for i in range(goal_index, k):
             if ball[i] is None:
                 continue
-            w = min(max((times[i] - t0) / (t_cross - t0), 0.0), 1.0) if t_cross > t0 else 1.0
+            w = min(max((times[i] - t0) / (t1 - t0), 0.0), 1.0) if t1 > t0 else 1.0
             x, y, z = ball[i]
             ball[i] = (x, y + dy * w, max(z + dz * w, 0.0))
         point = (point[0], yc + dy, zc + dz)
@@ -242,7 +282,7 @@ def _into_net(ball, times, k, t_cross, point, side):
         ball[i] = _lerp(point, rest, w)
 
 
-def _synthesize_shot(ball, times, start, side):
+def _synthesize_shot(ball, times, start, side, aim=None):
     """Overwrite the path after `start` with a straight shot into the goal at
     SHOT_SPEED. Returns the same tuple as _find_crossing."""
     max_y = POST_Y - MARGIN
@@ -270,7 +310,7 @@ def _synthesize_shot(ball, times, start, side):
             y_line = y0 + dy * (gx - x0) / dx
             if abs(y_line) <= POST_Y + 2.0:  # roughly on target; keep the aim, just inside the posts
                 aim_y = min(max(y_line, -max_y), max_y)
-    target = (gx, aim_y, min(max(z0, 0.3), BAR_Z - MARGIN))
+    target = (gx, *aim_point(aim_y, max(z0, 0.3), aim))
     t_cross = times[start] + math.dist(ball[start], target) / SHOT_SPEED
     k = start + 1
     while k < len(ball) and times[k] < t_cross:

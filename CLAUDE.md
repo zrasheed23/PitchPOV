@@ -2,12 +2,28 @@
 
 A static web app that replays every 2022 World Cup goal in 3D from real tracking data. Pick a player, pick a goal, and watch a ~21.5-second clip (15 s before the shot, 6.5 s after) with pause, scrub, 0.25x/0.5x/1x speed, and an orbit camera with presets. Full brief: [docs/brief.md](docs/brief.md).
 
-**Status:** Weekends 1–3 done (one goal plays in the 3D viewer with full controls). Weekend 4 in progress.
+**Status:** Weekends 1–4 done: 166 goals play in the 3D viewer (branch `weekend-2-3d`, not merged). The Sep 27 work below is committed. Next: fix what Zayd reports from watching clips, merge, then Weekend 5 (mobile check, Vercel deploy, README, demo GIF).
 
-## Current phase: Weekend 4 (scale up)
+## How Zayd works
 
-Run the pipeline on all 64 matches (`python pipeline/build_all.py`), which writes `clips/{gameId}_{gameEventId}.json` per goal plus `clips/index.json` and prints a validation report. The viewer loads the index and has a player search and goal list.
-**Done when:** any goal in the tournament loads and plays with the ball going in.
+- He watches clips in `cd web && npm run dev` and reports problems by player and minute. Short, direct answers, no buzzwords.
+- After pipeline changes: `python pipeline/build_all.py` then `python -m pytest`. The report's review list should be 0 and problems 0.
+
+## Pipeline order (`build_clip` in `pipeline/cut_clip.py`)
+
+`drop_out_of_play` → `pick_ball_source`, `borrow_gaps` (→ `tracked` flags: the feed really had the ball) → `estimate_gaps` → penalties only: `pin_ball`, `place_players` → `correct_goal_mouth` (with `aim`) → `smooth_jumps` → `find_contacts` → `align_contacts` → `rebuild_dribbles` → `anchor_frames` (dribble frames held) → `apply_physics` (with `touch_heights`) → `physics_shot` (with `retime_shot`) → `straighten_free_flight`.
+
+## Sep 27 changes
+
+- **Ball physics** (`ball_physics.py`, `ball_flight.py`): between touches the ball is a simulated kick (gravity, drag, bounces, rolling), solved to arrive at the next touch at the right time and height.
+- **Touches lined up with the tracking** (`align_contacts` in `contacts.py`): PFF event times are often off by ~0.5 s. A touch is kept if the ball is within 1.5 m of the player, else moved within ±0.4 s to where the tracked ball is at his feet, else (if the feed had a gap there) the ball is placed at his feet, else dropped. Shot touches are always kept; touches after the shot are dropped.
+- **Dribbles** (`dribble.py`): PFF logs a dribble as one carry. Stretches where one player keeps a low ball get a touch every stride (contacts with `"s": 1`), pushes rolled with physics, the carrier's track smoothed. If the rebuild isn't believable, the stretch is written as `carries` and the viewer holds the ball at his feet.
+- **Shot speed** (`retime_shot` in `cut_clip.py`): the tracking loses hard shots and the gap fill glided them in at ~11 m/s. A shot slower than 20 m/s average (headers 11, hands 8) gets an earlier crossing at that speed; the ball in the net plays on from there.
+- **Viewer**: `web/src/ballTrack.ts` smooths the ball (fills held coordinates, quadratic fit between touches, cubic interpolation with sharp corners at touches/bounces). Touch pull ±0.12 s, never more than 1.5 m. The ball rolls with its speed on the ground and only spins gently in the air. Cameras (`playCam.ts`): Broadcast = fixed TV wide shot that pans and zooms (default); Follow play = medium height behind the play with a shot cam behind the shooter. Carry fallback in `Replay.tsx`.
+- **Penalties** (`penalty.py`): PFF marks them with `gameEvents.setpieceType == "P"` on the shot (16 clips). Until the kick (`goalFrame`, which matches the ball leaving the spot to ~0.1 s) the ball sits on the spot at z 0; everyone but the taker and keeper is moved to the nearest point outside the area and 9.15 m from the spot (+0.25 m); the keeper stands on his line between the posts; the taker is eased onto the ball (0.5 m) over a 2 s run-up. The legal point follows each player frame to frame (a player PFF puts on the spot would otherwise flip around the arc). After the kick everyone blends back over max(0.5 s, move / 5 m/s). No touches, dribbles or carries before the kick. The keeper is whichever GK is within 6 m of the goal line: PFF swaps the teams' labels at Mbappé 117' in the final (10517_6739370: "Messi" at the spot, "Lloris" in goal).
+- **Shot placement** (`aim_point` in `goal_mouth.py`): PFF events have no end location in the goal mouth. `shotInitialHeightType` gives the height third (BOTTOMTHIRD, MIDDLETHIRD, TOPTHIRD, G = ground, U = unknown); the crossing height is moved into that band ("aimed"). Left/right can only be set by hand: `"aim": {"y": ..., "z": ...}` in `overrides.json` (Mbappé 80:58 volley: y -3.2, far corner). The review list's 3 m check uses `track_shift` (wide/high/clearance only), not moves to the logged height or a hand-set aim. `physics_shot` flies to the last frame before the line so the ball crosses where the correction put it.
+- Ferran Torres 53:41 v Costa Rica is excluded (neither feed has the shot). Messi 107:57 v France has logged players nowhere near the tracked ball; a candidate for exclusion.
+- Known side effect: "ball turning with nobody near it" went 127 → 301 after dropping mistimed touches.
 
 ## Architecture
 

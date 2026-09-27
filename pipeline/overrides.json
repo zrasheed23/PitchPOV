@@ -1,7 +1,8 @@
 {
   "10517_6738451.json": {
     "ballSource": "smoothed",
-    "note": "raw ball ~8 m from Mbappé at the shot"
+    "aim": {"y": -3.2},
+    "note": "raw ball ~8 m from Mbappé at the shot; the volley goes in the far (right) corner, both feeds cross near the middle"
   },
   "3819_6506643.json": {
     "ballSource": "raw",
@@ -165,5 +166,9 @@
   "3816_6502181.json": {
     "ballSource": "smoothed",
     "note": "raw ball flies 5 m past the goal line and 13 m up before the shot (tracking error); smoothed follows Romero's clearance dropping to Al-Dawsari"
+  },
+  "3822_6521934.json": {
+    "exclude": true,
+    "note": "neither feed has the shot: smoothed is stuck to Torres 26 m out, raw drifts past defenders and creeps into the goal 5.5 s after the goal event"
   }
 }

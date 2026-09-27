@@ -6,11 +6,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "pipeline"))
 from build_all import review_reasons
 
 
-def stats(source="raw", distance=2.0, needs_review=False, reason=None, shift=0.0, carried=0.0):
+def stats(source="raw", distance=2.0, needs_review=False, reason=None, shift=0.0, carried=0.0, track_shift=None):
     return {
         "ball_source": source,
         "raw_distance": distance,
-        "correction": {"needs_review": needs_review, "reason": reason, "shift": shift, "carried": carried},
+        "correction": {"needs_review": needs_review, "reason": reason, "shift": shift, "carried": carried,
+                       "track_shift": shift if track_shift is None else track_shift},
     }
 
 
@@ -18,6 +19,9 @@ def test_clean_clip_needs_no_review():
     assert review_reasons(stats()) == []
     assert review_reasons(stats(distance=5.9, reason="wide", shift=3.0)) == []
     assert review_reasons(stats(source="smoothed", distance=7.0)) == []  # e.g. an override
+    # Moving the ball to the logged height or a hand-set aim is not a tracking fix.
+    assert review_reasons(stats(reason="aimed", shift=3.4, track_shift=0.0)) == []
+    assert review_reasons(stats(reason="wide", shift=3.1, track_shift=2.9)) == []
 
 
 def test_review_reasons():

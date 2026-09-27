@@ -35,6 +35,8 @@ def _clock(event):
 
 def _goal(event, scorer_id, scorer_name, side, own_goal):
     seconds, formatted = _clock(event)
+    pe = event.get("possessionEvents") or {}
+    shot = pe.get("possessionEventType") == "SH" and not own_goal
     return {
         "gameId": str(event["gameId"]),
         "gameEventId": event["gameEventId"],
@@ -47,6 +49,10 @@ def _goal(event, scorer_id, scorer_name, side, own_goal):
         "side": side,  # the scorer's team
         "ownGoal": own_goal,
         "forSide": OTHER_SIDE[side] if own_goal else side,  # the team the goal counts for
+        "penalty": shot and event["gameEvents"].get("setpieceType") == "P",
+        # Which third of the goal's height the shot went in at (BOTTOMTHIRD,
+        # MIDDLETHIRD, TOPTHIRD, G for along the ground); PFF has no left/right.
+        "shotHeight": pe.get("shotInitialHeightType") if shot else None,
     }
 
 

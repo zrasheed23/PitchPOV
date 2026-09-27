@@ -86,8 +86,8 @@ def review_reasons(stats):
         reasons.append(f"ball moves at {stats['max_ball_speed']:.0f} m/s")
     if c["reason"] == "synthesized":
         reasons.append(f"shot path synthesized ({c['carried']:.1f} m)")
-    if c["shift"] > BIG_SHIFT_M:
-        reasons.append(f"{c['reason']} correction shifted {c['shift']:.1f} m")
+    if c["track_shift"] > BIG_SHIFT_M:
+        reasons.append(f"{c['reason']} correction shifted {c['track_shift']:.1f} m")
     d = stats["raw_distance"]
     if stats["ball_source"] == "raw" and d is not None and REVIEW_RAW_M <= d <= RAW_BALL_MAX_M:
         reasons.append(f"raw ball {d:.1f} m from the scoring team")
@@ -154,19 +154,38 @@ def report(matches, results, problems, skipped, n_games):
             by_reason[c["reason"]] = by_reason.get(c["reason"], 0) + 1
         reasons = ", ".join(f"{n} {r}" for r, n in sorted(by_reason.items()))
         print(f"goal-mouth correction: {len(corrected)} of {len(results)} clips ({reasons or 'none'})")
-        big = [(g, c) for g, c in corrected if c["shift"] > BIG_SHIFT_M]
-        print(f"shifted more than {BIG_SHIFT_M:.0f} m (check by eye): {len(big)}")
-        for g, c in sorted(big, key=lambda gc: -gc[1]["shift"]):
-            print(f"  {clip_name(g)}  {g['scorer']} {g['clock']}  {c['reason']}, shift {c['shift']:.1f} m")
+        big = [(g, c) for g, c in corrected if c["track_shift"] > BIG_SHIFT_M]
+        print(f"tracking shifted more than {BIG_SHIFT_M:.0f} m (check by eye): {len(big)}")
+        for g, c in sorted(big, key=lambda gc: -gc[1]["track_shift"]):
+            print(f"  {clip_name(g)}  {g['scorer']} {g['clock']}  {c['reason']}, shift {c['track_shift']:.1f} m"
+                  + (f" ({c['shift']:.1f} m with the logged height)" if c["shift"] > c["track_shift"] + 0.05 else ""))
         carried = [(g, c) for g, c in corrected if c["carried"] > 0]
         if carried:
             print(f"ball carried in after it vanished near goal: {len(carried)}")
             for g, c in sorted(carried, key=lambda gc: -gc[1]["carried"]):
                 print(f"  {clip_name(g)}  {g['scorer']} {g['clock']}  {c['carried']:.1f} m")
+        aimed = [(g, s) for g, s in results if s.get("aim_override")]
+        print(f"crossing point set in {OVERRIDES.name}: {len(aimed)}")
+        for g, s in aimed:
+            print(f"  {clip_name(g)}  {g['scorer']} {g['clock']}  {s['override']['aim']}, "
+                  f"moved {s['correction']['shift']:.1f} m")
+        pens = [(g, s) for g, s in results if g.get("penalty")]
+        print(f"penalties (ball on the spot, players set up legally until the kick): {len(pens)}")
+        for g, s in pens:
+            print(f"  {clip_name(g)}  {g['scorer']} {g['clock']}  largest player move {s['penalty_moved']:.1f} m")
         est = [(g, s["estimated_frames"]) for g, s in results if s.get("estimated_frames")]
         total_frames = sum(s["frames"] for _, s in results)
         print(f"ball estimated where the tracking lost it: {len(est)} clips, "
               f"{100 * sum(n for _, n in est) / total_frames:.1f}% of all frames")
+        kb = sum(s["kinks"][0] for _, s in results)
+        ka = sum(s["kinks"][1] for _, s in results)
+        print(f"ball turning with nobody near it (before the shot): {kb} -> {ka} "
+              f"({sum(s['simulated'] for _, s in results)} free-flight stretches simulated with ball physics, "
+              f"{sum(s['straightened'] for _, s in results)} straightened)")
+        fixes = {k: sum(s["contact_fixes"][k] for _, s in results) for k in results[0][1]["contact_fixes"]} if results else {}
+        print("logged touches vs tracking: " + ", ".join(f"{k.replace('_', ' ')} {v}" for k, v in fixes.items()))
+        print(f"dribbles rebuilt as pushes: {sum(s.get('dribbles', 0) for _, s in results)}, "
+              f"left to the viewer as carries: {sum(s.get('carries', 0) for _, s in results)}")
         review = [(g, review_reasons(s)) for g, s in results if review_reasons(s)]
         print(f"review list (needsReview, shift > {BIG_SHIFT_M:.0f} m, or raw at "
               f"{REVIEW_RAW_M:.0f}-{RAW_BALL_MAX_M:.0f} m): {len(review)}")

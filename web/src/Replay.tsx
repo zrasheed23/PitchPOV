@@ -2,6 +2,7 @@ import { Html } from '@react-three/drei'
 import { useFrame } from '@react-three/fiber'
 import { type RefObject, useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
+import { type BallTrack, sampleBall } from './ballTrack'
 import { type Clip, attackingSide, clipDuration, frameIndexAt, sampleClip } from './clip'
 import { colorDistance, kitColors } from './kit'
 import { distanceAt, runDistances, velocities } from './motion'
@@ -9,10 +10,51 @@ import type { Playback } from './playback'
 import { type Kit, PlayerBody } from './Player'
 import { DIVE_LENGTH_S, PLAYER_HEIGHT, type Rig, animateDive, animateRig, animateTouch } from './rig'
 
-const TOUCH_WINDOW_S = 0.25 // a touch is animated (and the ball pulled onto the foot/head) this long either side
+const TOUCH_WINDOW_S = 0.25 // a touch is animated this long either side
+const TOUCH_PULL_S = 0.12 // the ball is shifted onto the foot/head this long either side
+const MAX_PULL_M = 1.5 // ...but only by up to this much
+const touchOffset = new THREE.Vector3()
+// Carry fallback: where the pipeline couldn't rebuild a dribble as pushes, the
+// ball is held just in front of the player's feet, easing out and back in with
+// each stride, instead of drawing the tracked ball wandering around him.
+const CARRY_BLEND_S = 0.15
+const CARRY_AHEAD_M = [0.4, 0.75] // nearest and farthest from him over a stride
+const carryPoint = new THREE.Vector3()
 const touchPoint = new THREE.Vector3()
 const ballPoint = new THREE.Vector3()
 const smooth = (x: number) => (x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3 - 2 * x))
+// A football texture: white with dark panels, so you can see it roll.
+function ballTexture(): THREE.CanvasTexture {
+  const c = document.createElement('canvas')
+  c.width = 256
+  c.height = 128
+  const ctx = c.getContext('2d')!
+  ctx.fillStyle = '#f4f4f4'
+  ctx.fillRect(0, 0, 256, 128)
+  ctx.fillStyle = '#1b1b1b'
+  const spots: [number, number, number][] = [
+    [32, 64, 14], [96, 30, 12], [96, 98, 12], [160, 64, 14], [224, 30, 12], [224, 98, 12], [128, 8, 10], [128, 120, 10],
+  ]
+  for (const [x, y, r] of spots) {
+    ctx.beginPath()
+    for (let i = 0; i < 5; i++) {
+      const a = (i / 5) * Math.PI * 2 - Math.PI / 2
+      ctx.lineTo(x + Math.cos(a) * r, y + Math.sin(a) * r)
+    }
+    ctx.closePath()
+    ctx.fill()
+  }
+  const tex = new THREE.CanvasTexture(c)
+  tex.colorSpace = THREE.SRGBColorSpace
+  return tex
+}
+const rollAxis = new THREE.Vector3()
+// On the ground the ball turns exactly as fast as it rolls. In the air nothing
+// drives it, so it keeps a gentle spin that slowly dies away, instead of the
+// fast "rolling in mid-air" spin a shot or cross used to get.
+const ON_GROUND_M = 0.06 // ball bottom this close to the grass counts as rolling
+const AIR_SPIN_MAX = 6 // rad/s
+const AIR_SPIN_DECAY = 0.6 // per second
 const ESTIMATED_BALL_OPACITY = 0.55 // ball drawn this faded where its position is estimated
 const BALL_RADIUS = 0.16 // a bit larger than a real ball (0.11) so it reads from afar
 const LABEL_Y = PLAYER_HEIGHT + 0.75
@@ -140,12 +182,13 @@ const hitMaterial = <meshBasicMaterial transparent opacity={0} depthWrite={false
 
 interface ReplayProps {
   clip: Clip
+  track: BallTrack
   playback: RefObject<Playback>
   ball: RefObject<THREE.Mesh | null>
   onEnded: () => void
 }
 
-export function Replay({ clip, playback, ball, onEnded }: ReplayProps) {
+export function Replay({ clip, track, playback, ball, onEnded }: ReplayProps) {
   const duration = clipDuration(clip)
   const players = useRef<Record<string, THREE.Group | null>>({})
   const rigs = useRef<Record<string, Rig | null>>({})
@@ -153,21 +196,25 @@ export function Replay({ clip, playback, ball, onEnded }: ReplayProps) {
   const dist = useMemo(() => runDistances(clip), [clip])
   const playerKits = useMemo(() => kits(clip), [clip])
   const dive = useMemo(() => planDive(clip), [clip])
+  const ballTex = useMemo(() => ballTexture(), [])
+  useEffect(() => () => ballTex.dispose(), [ballTex])
+  const lastBall = useRef<THREE.Vector3 | null>(null)
+  const spin = useRef({ axis: new THREE.Vector3(1, 0, 0), rate: 0 })
   // Touches with their clip times, and which way each player faces for it:
   // toward where the ball goes next, or where it came from if it stops there.
   const touches = useMemo(
     () =>
       (clip.contacts ?? []).map((c) => {
         const t = clip.frames[c.f].t
-        const at = sampleClip(clip, t).ball
-        const next = sampleClip(clip, Math.min(t + 0.25, duration)).ball
-        const prev = sampleClip(clip, Math.max(t - 0.25, 0)).ball
+        const at = sampleBall(track, clip.frames, t)
+        const next = sampleBall(track, clip.frames, Math.min(t + 0.25, duration))
+        const prev = sampleBall(track, clip.frames, Math.max(t - 0.25, 0))
         let dir: [number, number] | null = null
         if (at && next && Math.hypot(next[0] - at[0], next[1] - at[1]) > 0.8) dir = [next[0] - at[0], next[1] - at[1]]
         else if (at && prev) dir = [prev[0] - at[0], prev[1] - at[1]]
-        return { ...c, t, dir }
+        return { ...c, t, dir, at }
       }),
-    [clip, duration],
+    [clip, track, duration],
   )
   // Frames where the pipeline estimated the ball; it's drawn slightly faded there.
   const estimated = useMemo(() => {
@@ -175,6 +222,10 @@ export function Replay({ clip, playback, ball, onEnded }: ReplayProps) {
     for (const [a, b] of clip.ballEstimated ?? []) flags.fill(1, a, b + 1)
     return flags
   }, [clip])
+  const carries = useMemo(
+    () => (clip.carries ?? []).map(([a, b, p]) => ({ t0: clip.frames[a].t, t1: clip.frames[b].t, p })),
+    [clip],
+  )
   const [hovered, setHovered] = useState<string | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
   const labelled = hovered ?? selected
@@ -195,6 +246,7 @@ export function Replay({ clip, playback, ball, onEnded }: ReplayProps) {
       }
     }
     const s = sampleClip(clip, pb.time)
+    s.ball = sampleBall(track, clip.frames, pb.time)
 
     // The touch nearest to now, if one is within the window.
     let touch: (typeof touches)[number] | null = null
@@ -263,18 +315,60 @@ export function Replay({ clip, playback, ball, onEnded }: ReplayProps) {
         ball.current.position.set(x, Math.max(z, 0) + BALL_RADIUS, -y)
       }
 
-      // Pull the ball onto the foot, head or hands of whoever touches it, so the
-      // contact is visible: fully at the moment of the touch, easing off either side.
-      const g = touch && players.current[touch.p]
-      const rig = touch && rigs.current[touch.p]
-      if (touch && g && rig) {
+      const carry = carries.find((c) => pb.time > c.t0 - CARRY_BLEND_S && pb.time < c.t1 + CARRY_BLEND_S)
+      const carrier = carry && players.current[carry.p]
+      if (carry && carrier) {
+        const w = smooth(Math.min(pb.time - (carry.t0 - CARRY_BLEND_S), carry.t1 + CARRY_BLEND_S - pb.time) / CARRY_BLEND_S)
+        const stride = (distanceAt(clip, dist[carry.p], pb.time) / STRIDE_M) % 1
+        const ahead = CARRY_AHEAD_M[0] + (CARRY_AHEAD_M[1] - CARRY_AHEAD_M[0]) * Math.sin(stride * Math.PI)
+        carryPoint.set(
+          carrier.position.x - Math.sin(carrier.rotation.y) * ahead,
+          BALL_RADIUS,
+          carrier.position.z - Math.cos(carrier.rotation.y) * ahead,
+        )
+        ball.current.position.lerp(carryPoint, w)
+        ball.current.visible = true
+      }
+
+      // Roll the ball: turn it by the distance it moved over its radius.
+      const now = ball.current.position
+      const prev = lastBall.current
+      if (prev) {
+        const dx = now.x - prev.x
+        const dz = now.z - prev.z
+        const d = Math.hypot(dx, dz)
+        const dt = Math.min(delta, 0.1) * (pb.playing && !pb.scrubbing ? pb.speed : 0)
+        const sp = spin.current
+        if (d > 1e-4 && d < 3 && now.y - BALL_RADIUS < ON_GROUND_M) {
+          rollAxis.set(dz, 0, -dx).normalize()
+          ball.current.rotateOnWorldAxis(rollAxis, d / BALL_RADIUS)
+          sp.axis.copy(rollAxis)
+          sp.rate = dt > 0 ? Math.min(d / BALL_RADIUS / dt, AIR_SPIN_MAX) : sp.rate
+        } else if (d > 1e-4 && d < 3) {
+          if (sp.rate === 0) sp.axis.set(dz, 0, -dx).normalize()
+          sp.rate = Math.max(sp.rate, 2) * Math.exp(-AIR_SPIN_DECAY * dt)
+          ball.current.rotateOnWorldAxis(sp.axis, sp.rate * dt)
+        }
+        prev.copy(now)
+      } else {
+        lastBall.current = now.clone()
+      }
+
+      // Put the ball on the foot, head or hands of whoever touches it, so the
+      // contact is visible. The ball is shifted by the gap between the foot and
+      // where the ball was at the touch, fading out either side, so it keeps its
+      // real speed instead of being dragged back to the foot.
+      const pull = touch && Math.abs(pb.time - touch.t) < TOUCH_PULL_S ? touch : null
+      const g = pull && players.current[pull.p]
+      const rig = pull && rigs.current[pull.p]
+      if (pull && g && rig) {
         g.updateMatrixWorld(true)
         const fx = -Math.sin(g.rotation.y)
         const fz = -Math.cos(g.rotation.y)
-        if (touch.b === 'H') {
+        if (pull.b === 'H') {
           rig.head.getWorldPosition(touchPoint)
           touchPoint.y += 0.11 + BALL_RADIUS
-        } else if (touch.b === 'X') {
+        } else if (pull.b === 'X') {
           touchPoint.set(g.position.x + fx * 0.45, 1.35, g.position.z + fz * 0.45)
         } else {
           ;(touchSide > 0 ? rig.footR : rig.footL).getWorldPosition(touchPoint)
@@ -282,10 +376,16 @@ export function Replay({ clip, playback, ball, onEnded }: ReplayProps) {
           touchPoint.z += fz * 0.16
           touchPoint.y = Math.max(touchPoint.y, 0) + BALL_RADIUS * 0.8
         }
-        const w = smooth(1 - Math.abs(pb.time - touch.t) / TOUCH_WINDOW_S)
-        ballPoint.copy(ball.current.position)
-        if (!s.ball) ballPoint.copy(touchPoint)
-        ball.current.position.lerpVectors(ballPoint, touchPoint, w)
+        const w = smooth(1 - Math.abs(pb.time - pull.t) / TOUCH_PULL_S)
+        if (s.ball && pull.at) {
+          ballPoint.set(pull.at[0], Math.max(pull.at[2], 0) + BALL_RADIUS, -pull.at[1])
+          touchOffset.subVectors(touchPoint, ballPoint)
+          // A touch whose ball is metres away is mistimed: never drag the ball back to the foot.
+          if (touchOffset.length() <= MAX_PULL_M) ball.current.position.addScaledVector(touchOffset, w)
+        } else {
+          ballPoint.copy(s.ball ? ball.current.position : touchPoint)
+          ball.current.position.lerpVectors(ballPoint, touchPoint, w)
+        }
         ball.current.visible = true
       }
     }
@@ -333,7 +433,7 @@ export function Replay({ clip, playback, ball, onEnded }: ReplayProps) {
       ))}
       <mesh ref={ball} castShadow>
         <sphereGeometry args={[BALL_RADIUS, 24, 16]} />
-        <meshStandardMaterial color="white" roughness={0.35} transparent />
+        <meshStandardMaterial map={ballTex} roughness={0.35} transparent />
       </mesh>
     </group>
   )

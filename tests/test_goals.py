@@ -204,3 +204,15 @@ def test_index_sorted_by_date_then_match_time_with_running_score():
     assert third["minute"] == "51'"
     assert (other["score"]["home"], other["score"]["away"]) == (1, 0)
     assert first["stage"] == "Group stage · Matchday 1"
+
+
+def test_penalty_and_shot_height_are_read_from_the_shot():
+    pen = goal_shot(1, 100, setpiece="P")
+    pen["possessionEvents"]["possessionEventType"] = "SH"
+    pen["possessionEvents"]["shotInitialHeightType"] = "TOPTHIRD"
+    open_play = goal_shot(5, 400)
+    open_play["possessionEvents"]["possessionEventType"] = "SH"
+    events = [pen, marker(2, 101, "home"), kickoff(3, 150, "away"),
+              open_play, marker(6, 401, "home"), kickoff(7, 450, "away"), end(8, 3000, 2)]
+    goals, _, _ = find_goals(events)
+    assert [(g["penalty"], g["shotHeight"]) for g in goals] == [(True, "TOPTHIRD"), (False, None)]
