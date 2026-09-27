@@ -250,3 +250,20 @@ def test_smooth_jumps_drops_a_jump_into_a_lost_ball():
     ball = [(40.0 - 0.3 * i, 0.0, 1.0) for i in range(40)] + [(10.0, -5.0, 5.0), (8.0, -5.0, 5.0)] + [None] * 18
     out, fixed = smooth_jumps(ball, times, start=20)
     assert fixed == 1 and out[:40] == ball[:40] and out[40:] == [None] * 20
+
+
+def test_statsbomb_votes_win_over_the_pairing_in_the_swapped_periods():
+    """A clear StatsBomb vote names a slot; the rest still pair by number and position."""
+    roles = ((("home", "10"), "RW"), (("home", "23"), "GK"), (("home", "22"), "CF"), (("home", "24"), "CM"),
+             (("away", "10"), "LW"), (("away", "1"), "GK"), (("away", "12"), "CF"), (("away", "8"), "CM"))
+    frame = {"period": 4,
+             "homePlayersSmoothed": [{"jerseyNum": "10", "x": 41.8}, {"jerseyNum": "23", "x": -27.4},
+                                     {"jerseyNum": "22", "x": 30.0}, {"jerseyNum": "24", "x": 5.0}],
+             "awayPlayersSmoothed": [{"jerseyNum": "10", "x": 39.1}, {"jerseyNum": "1", "x": 51.7},
+                                     {"jerseyNum": "12", "x": 33.0}, {"jerseyNum": "8", "x": 20.0}]}
+    # StatsBomb has Argentina #24 where the away list's #12 is, and #22 at its #8.
+    lists = player_lists(frame, 10517, roles, {("home", "12"): "24", ("home", "8"): "22"})
+    home = {p["jerseyNum"]: p["x"] for p in lists["home"]}
+    assert home == {"24": 33.0, "22": 20.0, "10": 39.1, "23": 51.7}
+    away = {p["jerseyNum"]: p["x"] for p in lists["away"]}
+    assert away == {"10": 41.8, "1": -27.4, "12": 30.0, "8": 5.0}

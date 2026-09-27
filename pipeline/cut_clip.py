@@ -21,6 +21,7 @@ from dribble import rebuild_dribbles
 from estimate_gaps import estimate_gaps
 from goals import clip_name, find_goals
 from penalty import find_keeper, pin_ball, place_players
+import relabel
 
 RAW = Path("data/raw")
 OVERRIDES = Path(__file__).resolve().parent / "overrides.json"
@@ -164,25 +165,66 @@ def label_pairing(home_numbers, away_numbers, roles):
     return pair
 
 
-def player_lists(frame, game_id, roles=()):
+def player_lists(frame, game_id, roles=(), votes=None):
     """{"home": [...], "away": [...]}: the frame's players, undoing PFF's swap in
     SWAPPED_PERIODS. There each list's shirt numbers are its own team's players
     on the pitch (they change at that team's substitutions) but the positions
     are the other team's: the positions under home #10 are away #10's. Where
     the other team has no such number, labels pair up by position (GK with GK,
     LCB with LCB, CF with CF: see label_pairing), which is what the logged
-    touches show. roles: ((side, number), positionGroupType) pairs."""
+    touches show. roles: ((side, number), positionGroupType) pairs.
+    votes: {(team side, label in the list carrying that team): shirt number}
+    from StatsBomb (relabel.window_votes); they win over the pairing."""
     home = frame.get("homePlayersSmoothed") or []
     away = frame.get("awayPlayersSmoothed") or []
     if frame.get("period") not in SWAPPED_PERIODS.get(str(game_id), ()):
         return {"home": home, "away": away}
     h_nums = tuple(sorted({p["jerseyNum"] for p in home}, key=str))
     a_nums = tuple(sorted({p["jerseyNum"] for p in away}, key=str))
-    pair = label_pairing(h_nums, a_nums, roles)
-    back = {a: h for h, a in pair.items()}
+    # to_home: label in the away list -> home number; to_away: label in the home list -> away number
+    to_home, to_away = {}, {}
+    for (side, label), num in (votes or {}).items():
+        if side == "home" and label in a_nums and num in h_nums:
+            to_home[label] = num
+        elif side == "away" and label in h_nums and num in a_nums:
+            to_away[label] = num
+    if to_home or to_away:
+        pair = label_pairing(tuple(n for n in h_nums if n not in to_home.values()),
+                             tuple(n for n in a_nums if n not in to_home), roles)
+        to_home |= {a: h for h, a in pair.items()}
+        pair = label_pairing(tuple(n for n in h_nums if n not in to_away),
+                             tuple(n for n in a_nums if n not in to_away.values()), roles)
+        to_away |= pair
+    else:
+        to_away = label_pairing(h_nums, a_nums, roles)
+        to_home = {a: h for h, a in to_away.items()}
     # Entries with no partner (a substitution frame where one list has 12) are dropped.
-    return {"home": [{**p, "jerseyNum": back[p["jerseyNum"]]} for p in away if p["jerseyNum"] in back],
-            "away": [{**p, "jerseyNum": pair[p["jerseyNum"]]} for p in home if p["jerseyNum"] in pair]}
+    return {"home": [{**p, "jerseyNum": to_home[p["jerseyNum"]]} for p in away if p["jerseyNum"] in to_home],
+            "away": [{**p, "jerseyNum": to_away[p["jerseyNum"]]} for p in home if p["jerseyNum"] in to_away]}
+
+
+def swapped_votes(meta, roster, events, frames):
+    """StatsBomb votes (relabel.py) for a clip window in a swapped period, else None."""
+    game_id = str(meta["id"])
+    periods = {f.get("period") for f in frames} & SWAPPED_PERIODS.get(game_id, set())
+    if len(periods) != 1 or not events:
+        return None
+    period = periods.pop()
+    sb = relabel.statsbomb_events(meta, roster, events)
+    if sb is None:
+        return None
+    pitch = meta["stadium"]["pitches"][0]
+    idx = [i for i, f in enumerate(frames) if f.get("period") == period]
+
+    def lists_at(n):
+        f = frames[idx[n]]
+        home, away = f.get("homePlayersSmoothed") or [], f.get("awayPlayersSmoothed") or []
+        # swapped: the away list carries the home team's positions
+        return {"home": [(p["jerseyNum"], p["x"], p["y"]) for p in away],
+                "away": [(p["jerseyNum"], p["x"], p["y"]) for p in home]}
+
+    return relabel.window_votes(sb, period, [frames[i]["videoTimeMs"] / 1000 for i in idx], lists_at,
+                                pitch["length"], pitch["width"])
 
 
 def ball_position(frame, source="smoothed"):
@@ -508,11 +550,12 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
 
     roles = tuple(sorted(((side, r["shirtNumber"]), r["positionGroupType"])
                          for side, team in sides.items() for r in roster if r["team"]["id"] == team["id"]))
+    votes = swapped_votes(meta, roster, events, frames)
     players = {}
     player_frames = []
     for frame in frames:
         positions = {}
-        lists = player_lists(frame, meta["id"], roles)
+        lists = player_lists(frame, meta["id"], roles, votes)
         for side, team in sides.items():
             for p in lists[side]:
                 r = by_shirt.get((team["id"], p["jerseyNum"]))
@@ -561,6 +604,10 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         jumps += after
     # The ball only changes direction when someone touches it: straighten it between touches.
     contacts = find_contacts(events or [], [f["videoTimeMs"] for f in frames], set(players))
+    # How often the logged toucher is within 3 m of the tracked ball: checks the names.
+    raw_ball = fill_gaps(paths["raw"])
+    near = [math.dist(raw_ball[c["f"]][:2], player_frames[c["f"]][c["p"]]) < 3 for c in contacts
+            if raw_ball[c["f"]] is not None and c["p"] in player_frames[c["f"]]]
     if penalty:  # the ball sits on the spot: nothing touches it before the kick
         contacts = [c for c in contacts if c["f"] >= goal_index]
     # Event times can be off by half a second: line each touch up with the tracking (contacts.py).
@@ -662,6 +709,9 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         "penalty_moved": moved,
         "aim_source": aim_source,
         "aim": aim,
+        "toucher_near": (sum(near), len(near)),
+        "votes": len(votes or {}),
+        "swapped": votes is not None,
     }
     return clip, stats
 

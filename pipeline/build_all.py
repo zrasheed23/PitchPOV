@@ -202,6 +202,16 @@ def report(matches, results, problems, skipped, n_games):
         print("logged touches vs tracking: " + ", ".join(f"{k.replace('_', ' ')} {v}" for k, v in fixes.items()))
         print(f"dribbles rebuilt as pushes: {sum(s.get('dribbles', 0) for _, s in results)}, "
               f"left to the viewer as carries: {sum(s.get('carries', 0) for _, s in results)}")
+        swapped = [(g, s) for g, s in results if s["swapped"]]
+        if swapped:
+            ok, n = (sum(s["toucher_near"][k] for _, s in swapped) for k in (0, 1))
+            print(f"extra-time label swap, slots named from StatsBomb: {len(swapped)} clips, "
+                  f"logged toucher within 3 m of the ball {ok}/{n}")
+            for g, s in swapped:
+                print(f"  {clip_name(g)}  {g['scorer']} {g['clock']}  {s['votes']} slots voted, "
+                      f"toucher within 3 m {s['toucher_near'][0]}/{s['toucher_near'][1]}")
+        ok, n = (sum(s["toucher_near"][k] for _, s in results if not s["swapped"]) for k in (0, 1))
+        print(f"logged toucher within 3 m of the ball, other clips: {ok}/{n} ({100 * ok / max(n, 1):.0f}%)")
         review = [(g, review_reasons(s)) for g, s in results if review_reasons(s)]
         print(f"review list (needsReview, shift > {BIG_SHIFT_M:.0f} m, or raw at "
               f"{REVIEW_RAW_M:.0f}-{RAW_BALL_MAX_M:.0f} m): {len(review)}")
