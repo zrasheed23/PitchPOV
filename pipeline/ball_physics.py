@@ -39,14 +39,12 @@ def simulate(z0, u0, w0, times):
     peak = z
     out_s, out_z = [], []
     i = 0
-    end = times[-1] if times else 0.0
+    while i < len(times) and times[i] <= 1e-9:
+        out_s.append(s)
+        out_z.append(z)
+        i += 1
     while i < len(times):
-        while i < len(times) and times[i] <= t + 1e-9:
-            out_s.append(s)
-            out_z.append(z)
-            i += 1
-        if t > end:
-            break
+        s0, z0_, t0 = s, z, t
         if rolling:
             u = max(0.0, u - (ROLL_DECEL + DRAG * u * u) * STEP)
             s += u * STEP
@@ -65,9 +63,13 @@ def simulate(z0, u0, w0, times):
                     rolling = True
             peak = max(peak, z)
         t += STEP
-    while len(out_s) < len(times):
-        out_s.append(s)
-        out_z.append(z)
+        # Each asked-for time lands between two steps: interpolate, so the
+        # samples aren't up to a step late (a visible stutter at shot speed).
+        while i < len(times) and times[i] <= t + 1e-9:
+            f = (times[i] - t0) / STEP
+            out_s.append(s0 + (s - s0) * f)
+            out_z.append(z0_ + (z - z0_) * f)
+            i += 1
     return out_s, out_z, peak
 
 
@@ -106,6 +108,38 @@ def solve_kick(z0, distance, duration, peak):
         else:
             hi = w0
     return best
+
+
+def solve_to_height(z0, distance, duration, z_end, w_lo=-8.0, w_hi=20.0, step=1.0):
+    """(u0, w0) for the flattest kick from z0 that covers `distance` in
+    `duration` and is at height z_end then, still on its first flight. None if
+    there's none."""
+    times = [duration]
+
+    def height(w0):
+        u0 = _solve_speed(z0, w0, times, distance)
+        if u0 is None:
+            return None, None
+        return simulate(z0, u0, w0, times)[1][-1] - z_end, u0
+
+    prev = None
+    w0 = w_lo
+    while w0 <= w_hi:
+        miss, u0 = height(w0)
+        if miss is not None and prev is not None and prev[1] < 0 <= miss:
+            a, b = prev[0], w0
+            for _ in range(20):
+                mid = (a + b) / 2
+                m, _ = height(mid)
+                if m is None or m >= 0:
+                    b = mid
+                else:
+                    a = mid
+            miss, u0 = height(b)
+            return (u0, b) if u0 is not None and abs(miss) < 0.05 else None
+        prev = (w0, miss) if miss is not None else None
+        w0 += step
+    return None
 
 
 def apply_physics(ball, times, anchors, end, touch_heights=None):

@@ -15,12 +15,14 @@ from pathlib import Path
 
 from goal_mouth import correct_goal_mouth, goal_side
 from ball_flight import anchor_frames, count_kinks, straighten_free_flight
-from ball_physics import MIN_FLIGHT_S, apply_physics
+from ball_physics import apply_physics
+from ball_rules import enforce_touch_rule, find_kick, fly_shot, shot_contact
 from contacts import align_contacts, find_contacts
 from dribble import rebuild_dribbles
 from estimate_gaps import estimate_gaps
 from goals import clip_name, find_goals
 from penalty import find_keeper, pin_ball, place_players
+from touch_rule import violations
 import relabel
 
 RAW = Path("data/raw")
@@ -387,85 +389,6 @@ def smooth_jumps(ball, times, end=None, start=0):
     return out, fixed
 
 
-SHOT_BLEND_FRAMES = 6  # ease the simulated shot onto the height where it crosses the line
-# The tracking usually loses a hard shot and re-finds the ball in the net, and the
-# gap fill in between glides it there: shots averaged ~11 m/s, about half real
-# speed. A shot slower than this (average over its flight) is re-timed to it.
-MIN_SHOT_MPS = {"H": 11.0, "X": 8.0}  # headers, hands; everything else is a kick
-MIN_KICK_MPS = 20.0
-MIN_SHOT_S = 0.25
-# ...and one faster than this is a feed jumping to the goal (de Jong v Qatar:
-# 23 m in 7 frames); it is stretched to this speed. The hardest shots average ~35 m/s.
-MAX_SHOT_MPS = 35.0
-
-
-def retime_shot(ball, times, goal_index, cross, part):
-    """If the ball takes too long from the shot to the line, move the crossing
-    earlier so the shot flies at the minimum speed for its body part; if it gets
-    there faster than MAX_SHOT_MPS, move it later. The path in between is the
-    tracked one squeezed or stretched in time (so its shape and peak stay), and
-    everything after the crossing (the ball in the net) plays from the new
-    crossing on. Returns (ball, new cross frame)."""
-    d = math.dist(ball[goal_index][:2], ball[cross][:2])
-    took = times[cross] - times[goal_index]
-    floor = MIN_SHOT_MPS.get(part, MIN_KICK_MPS)
-    want = max(d / floor, MIN_SHOT_S)
-    if took < d / MAX_SHOT_MPS:
-        want = d / MAX_SHOT_MPS
-    elif took <= want:
-        return ball, cross
-    t_new = times[goal_index] + want
-    new_cross = next((i for i in range(goal_index + 1, len(ball)) if times[i] >= t_new), len(ball) - 1)
-    if new_cross == cross:
-        return ball, cross
-    old = list(ball)
-    out = list(ball)
-
-    def at(t):  # old ball at time t (nearest frame with a ball)
-        k = min(range(goal_index, cross + 1), key=lambda i: abs(times[i] - t))
-        return old[k]
-
-    span = times[new_cross] - times[goal_index]
-    for k in range(goal_index + 1, new_cross):
-        u = (times[k] - times[goal_index]) / span
-        out[k] = at(times[goal_index] + u * took)
-    for k in range(new_cross, len(out)):
-        out[k] = old[min(cross + (k - new_cross), len(old) - 1)]
-    return out, new_cross
-
-
-def physics_shot(ball, times, goal_index, part=None):
-    """Fly the shot from the scorer's touch to where it crosses the goal line
-    (after the goal-mouth correction) as a real kick, at a believable speed (see
-    retime_shot), then ease its height onto the crossing height so it meets the
-    rest of the path. Returns (ball, 1 or 0)."""
-    side = goal_side(ball, goal_index)
-    cross = next((i for i in range(goal_index + 1, len(ball))
-                  if ball[i] is not None and side * ball[i][0] >= PITCH_LENGTH / 2), None)
-    if cross is None or ball[goal_index] is None:
-        return ball, 0
-    if all(ball[k] is not None for k in range(goal_index, cross + 1)):
-        ball, cross = retime_shot(ball, times, goal_index, cross, part)
-    # Fly to the last frame before the line: the frame past it is already on the
-    # way into the net, which can bend toward the middle near a post. (Unless that
-    # makes the flight too short for the solver.)
-    if (cross - 1 > goal_index and ball[cross - 1] is not None
-            and times[cross - 1] - times[goal_index] >= MIN_FLIGHT_S):
-        cross -= 1
-    before = list(ball)
-    out, n = apply_physics(ball, times, [goal_index, cross], cross)
-    if not n:
-        return ball, 0
-    for m in range(1, SHOT_BLEND_FRAMES + 1):
-        k = cross - m
-        if k <= goal_index or before[k] is None:
-            break
-        w = 1 - m / (SHOT_BLEND_FRAMES + 1)
-        x, y, z = out[k]
-        out[k] = (x, y, z + (before[k][2] - z) * w)
-    return out, 1
-
-
 def raw_ball_distance(raw_path, team_positions, goal_index):
     """Distance from the gap-filled raw ball at goalFrame to the nearest of
     team_positions [(x, y), ...], or None if there's no raw ball there."""
@@ -610,12 +533,22 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
             if raw_ball[c["f"]] is not None and c["p"] in player_frames[c["f"]]]
     if penalty:  # the ball sits on the spot: nothing touches it before the kick
         contacts = [c for c in contacts if c["f"] >= goal_index]
+    late_contacts = [c for c in contacts if c["f"] > goal_index]  # possible deflections of the shot
     # Event times can be off by half a second: line each touch up with the tracking (contacts.py).
     contacts, ball, contact_fixes = align_contacts(contacts, ball, tracked, player_frames, times, goal_index)
     if penalty:  # a shot touch lined up before the kick is the kick itself
         contacts = [{**c, "f": max(c["f"], goal_index)} for c in contacts]
         contacts = [c for n, c in enumerate(contacts) if not any(d["f"] == c["f"] and d["p"] == c["p"]
                                                                   for d in contacts[:n])]
+    # The shot: PFF can log it after the ball has left his foot (ball_rules.find_kick).
+    shot = shot_contact(contacts, goal, goal_index)
+    if shot is None:
+        shot = {"f": goal_index, "p": goal["scorerId"], "b": "F"}
+        contacts = sorted(contacts + [shot], key=lambda c: c["f"])
+    if not penalty:
+        kick = find_kick(ball, times, player_frames, shot["p"], shot["f"], shot["b"])
+        contacts = [c for c in contacts if c is shot or c["f"] < kick]
+        shot["f"] = kick
     touch_frames = [c["f"] for c in contacts]
     kinks_before = count_kinks(ball, times, player_frames, touch_frames, goal_index)
     # Dribbles aren't logged touch by touch: rebuild them as pushes (dribble.py).
@@ -632,13 +565,29 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     reach = {"H": (1.6, 2.3), "X": (0.5, 2.6)}
     touch_heights = {c["f"]: reach.get(c["b"], (0.0, 1.2)) for c in contacts}
     ball, simulated = apply_physics(ball, times, anchors, goal_index, touch_heights)
-    if penalty:  # smoothing can pull the kick frame toward the tracked flight: fly the shot from the spot
-        ball = pin_ball(ball, goal_index, side)
-    shot_part = next((c["b"] for c in reversed(contacts) if goal_index - 3 <= c["f"] <= goal_index), None)
-    ball, shot_simulated = physics_shot(ball, times, goal_index, shot_part)
     ball, straightened = straighten_free_flight(ball, player_frames, held, goal_index)
-    if penalty:  # and keep it there whatever straightening does before the kick
+    if penalty:  # keep the ball on the spot whatever smoothing does before the kick
         ball = pin_ball(ball, goal_index, side)
+    # The shot: from the shooter's foot, one kick to where it crosses the line (ball_rules.py).
+    shooter_team = players[shot["p"]]["team"] if shot["p"] in players else goal["side"]
+    deflections = [c for c in late_contacts if players[c["p"]]["team"] != shooter_team]
+    ball, shot_info = fly_shot(ball, times, player_frames, shot["f"], shot["p"], shot["b"], side, penalty,
+                               correction.get("cleared_after"), deflections)
+    # After the kick only a deflection with the ball near him touches it (the
+    # shot is logged twice, or by a player the ball never reaches).
+    contacts = sorted([c for c in contacts if c["f"] < shot["f"] or c is shot] + shot_info["deflected"],
+                      key=lambda c: c["f"])
+    carries = [[a, min(b, shot["f"] - 1), p] for a, b, p in carries if a < shot["f"] - 1]
+    rule_before = violations(ball, times, contacts, player_frames, goal_index, carries)
+    # Before the shot the ball only turns, speeds up or rises at a touch (ball_rules.py).
+    keepers = {pid: (1 if player_frames[goal_index][pid][0] > 0 else -1) for pid, p in players.items()
+               if p["position"] == "GK" and pid in player_frames[goal_index]}
+    # Checked and fixed on the clip as written (2 decimals; times to the ms).
+    times_out = [round(t, 3) for t in times]
+    players_out = [{pid: (round(x, 2), round(y, 2)) for pid, (x, y) in ps.items()} for ps in player_frames]
+    ball, contacts, rule_counts = enforce_touch_rule(ball, times_out, players_out, contacts, carries, shot["f"],
+                                                     keepers, moved=[shot["f"]] if shot_info["at_foot_moved"] > 0.05 else [])
+    rule_breaks = violations(ball, times_out, contacts, players_out, goal_index, carries)
     kinks_after = count_kinks(ball, times, player_frames, touch_frames, goal_index)
     missing_ball = sum(p is None for p in paths[ball_source])
 
@@ -701,7 +650,11 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         "jumps_smoothed": jumps,
         "estimated_frames": sum(b - a + 1 for a, b in estimated),
         "straightened": straightened,
-        "simulated": simulated + shot_simulated,
+        "simulated": simulated,
+        "shot": shot_info,
+        "rule_before": rule_before,
+        "rule_breaks": rule_breaks,
+        "rule_counts": rule_counts,
         "contact_fixes": contact_fixes,
         "dribbles": len(dribbles),
         "carries": len(carries),

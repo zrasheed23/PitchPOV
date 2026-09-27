@@ -181,22 +181,6 @@ def test_smooth_jumps_leaves_normal_play_alone():
     assert smooth_jumps(ball, times) == (ball, 0)
 
 
-def test_a_slow_tracked_shot_is_retimed_to_a_real_shot_speed():
-    from cut_clip import retime_shot
-    times = [i / 30 for i in range(120)]
-    # Shot at frame 10 from 18 m out, tracked gliding to the line in 2 s (9 m/s), then 1 m into the net.
-    ball = [(34.5, 0.0, 0.1)] * 11 + [(34.5 + 18 * (k / 60), 0.0, 1.0) for k in range(1, 61)] + \
-           [(52.5 + min((k + 1) / 20, 1.0), 0.0, 1.0) for k in range(49)]
-    out, cross = retime_shot(ball, times, 10, 70, "R")
-    assert abs((times[cross] - times[10]) - 0.9) < 0.05  # 18 m at 20 m/s
-    assert out[cross] == ball[70]  # still crosses where it did
-    assert out[cross + 5] == ball[75]  # and the ball in the net plays on from there
-    # A header is allowed to be slower; a shot that's already fast isn't touched.
-    assert retime_shot(ball, times, 10, 70, "H")[1] < 70
-    fast = ball[:11] + [(34.5 + 18 * (k / 20), 0.0, 1.0) for k in range(1, 21)] + ball[71:]
-    assert retime_shot(fast, times, 10, 30, "R")[1] == 30
-
-
 def test_player_lists_undo_the_label_swap_in_the_finals_extra_time():
     """In the final's extra time the positions under each team's labels are the
     other team's: same numbers pair up, the rest by position (GK with GK)."""
@@ -231,17 +215,6 @@ def test_smooth_jumps_leaves_frames_after_end_alone():
     out, fixed = smooth_jumps(ball, times, end=35)
     assert (out, fixed) == (ball, 0)  # the teleport at frame 40 is after the shot
     assert smooth_jumps(ball, times)[1] == 1
-
-
-def test_a_shot_faster_than_any_real_one_is_stretched():
-    from cut_clip import MAX_SHOT_MPS, retime_shot
-    times = [i / 30 for i in range(120)]
-    # 23 m from the shot at frame 10 to the line in 7 frames (~100 m/s), then into the net.
-    ball = [(29.5, 0.0, 0.5)] * 11 + [(29.5 + 23 * k / 7, 0.0, 0.5) for k in range(1, 8)] + \
-           [(52.5 + min((k + 1) / 20, 1.0), 0.0, 0.5) for k in range(102)]
-    out, cross = retime_shot(ball, times, 10, 17, "R")
-    assert abs((times[cross] - times[10]) - 23 / MAX_SHOT_MPS) < 0.04
-    assert out[cross] == ball[17] and out[cross + 5] == ball[22]
 
 
 def test_smooth_jumps_drops_a_jump_into_a_lost_ball():

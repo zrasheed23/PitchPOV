@@ -90,6 +90,9 @@ def review_reasons(stats):
     reasons = []
     if c["needs_review"]:
         reasons.append(f"ball doesn't go in ({c['reason']})")
+    if stats.get("rule_breaks"):
+        kinds = Counter(k for _, k in stats["rule_breaks"])
+        reasons.append("ball changes course with no touch: " + ", ".join(f"{n} {k}" for k, n in sorted(kinds.items())))
     if (stats.get("override") or {}).get("reviewed"):
         return reasons
     if stats.get("max_ball_speed", 0) > FAST_BALL_MPS:
@@ -202,6 +205,26 @@ def report(matches, results, problems, skipped, n_games):
         print("logged touches vs tracking: " + ", ".join(f"{k.replace('_', ' ')} {v}" for k, v in fixes.items()))
         print(f"dribbles rebuilt as pushes: {sum(s.get('dribbles', 0) for _, s in results)}, "
               f"left to the viewer as carries: {sum(s.get('carries', 0) for _, s in results)}")
+        before = Counter(k for _, s in results for _, k in s["rule_before"])
+        after = Counter(k for _, s in results for _, k in s["rule_breaks"])
+        fixes = Counter()
+        for _, s in results:
+            fixes.update(s["rule_counts"])
+        print(f"ball changing course with no touch (turn, sudden speed change, lift, touch out of reach), "
+              f"before the shot: {sum(before.values())} -> {sum(after.values())} "
+              f"({', '.join(f'{k} {n}' for k, n in sorted(before.items()))} before the fixes)")
+        print(f"  touches added where a player was within reach: {fixes['touches_added']}, stretches flown as one "
+              f"kick between touches: {fixes['joined']}, balls moved to the toucher: {fixes['moved_to_foot']}, "
+              f"straight-line flights (no kick fits): {fixes['straight']}")
+        for g, s in results:
+            if s["rule_breaks"]:
+                print(f"  {clip_name(g)}  {g['scorer']} {g['clock']}  {s['rule_breaks']}")
+        shots = [s["shot"] for _, s in results]
+        moved = sorted(x["at_foot_moved"] for x in shots)
+        print(f"shots: ball moved to the shooter's foot at the kick: median {statistics.median(moved):.1f} m, "
+              f"max {moved[-1]:.1f} m; shooter moved onto the ball (tracked > 3 m from it): "
+              f"{sum(1 for x in shots if x['shooter_moved'])} clips, most "
+              f"{max(x['shooter_moved'] for x in shots):.1f} m; deflections kept: {sum(len(x['deflected']) for x in shots)}")
         swapped = [(g, s) for g, s in results if s["swapped"]]
         if swapped:
             ok, n = (sum(s["toucher_near"][k] for _, s in swapped) for k in (0, 1))
