@@ -23,6 +23,7 @@ import math
 from ball_physics import MIN_FLIGHT_S, simulate, solve_kick, solve_to_height
 from goal_mouth import GOAL_LINE_X
 from net import into_net
+from identity import try_swap
 from touch_rule import REACH_M, REACH_Z, WINDOW, violations
 
 ADD_TOUCH_M = 2.5
@@ -270,7 +271,7 @@ def move_shooter(player_frames, times, pid, kick, ball_xy, toward):
 MEET_M = 1.2  # at a touch the ball is at most this far from the player's centre
 MEET_EASE_S = 0.5
 MEET_CATCHUP_MPS = 3.0  # moved onto the ball no faster than this on top of his own run
-MEET_MAX_M = 10.0  # a player this far from a well-supported ball is the data being wrong: flagged, not moved
+MEET_MAX_M = 5.0  # never move a player farther than this to reach a touch: an identity swap, or flagged
 GOAL_AREA_X, GOAL_AREA_Y = 52.5 - 3.0, 10.0  # near the goal line: the ball's position there is well supported
 
 
@@ -294,15 +295,18 @@ def ease_player_to(player_frames, times, pid, f, spot, ease_s=MEET_EASE_S, catch
     return gap
 
 
-def meet_touches(ball, times, player_frames, contacts, end, skip=()):
+def meet_touches(ball, times, player_frames, contacts, end, skip=(), players=None, events=()):
     """Every touch up to frame `end` has the player at the ball. Where the
     ball's position is well supported (a StatsBomb touch, or near the goal
     line) and he's more than MEET_M from it, the player is moved onto it
-    (ease_player_to); the rest are left for the touch rule, which moves the
-    ball. Players more than MEET_MAX_M off are left (and flagged) unless the
-    tracked ball is there too ("tr": StatsBomb and the tracking agree). In place on
-    player_frames; returns [(contact, metres moved)] and the skipped far ones."""
-    moved, too_far = [], []
+    (ease_player_to), but never more than MEET_MAX_M: farther than that, a
+    teammate at the ball means PFF mixed their identities up (identity.try_swap,
+    checked against StatsBomb's events); else, if the tracked ball backs the
+    spot ("tr"), the touch is flagged, and if only StatsBomb does, the ball
+    goes to him. The rest
+    are left for the touch rule, which moves the ball. In place on
+    player_frames; returns ([(contact, metres moved)], flagged contacts, swaps)."""
+    moved, too_far, swaps = [], [], []
     for _ in range(2):  # moves near each other nudge earlier touches: settle them
         for c in contacts:
             f, pid = c["f"], c["p"]
@@ -313,14 +317,25 @@ def meet_touches(ball, times, player_frames, contacts, end, skip=()):
             near_line = abs(b[0]) >= GOAL_AREA_X and abs(b[1]) <= GOAL_AREA_Y
             if d <= MEET_M or not (c.get("sb") or near_line):
                 continue
-            if d > MEET_MAX_M and not c.get("tr"):  # beyond it only if the tracked ball backs StatsBomb
-                if c not in too_far:
+            if d > MEET_MAX_M and players is not None:
+                swap = try_swap(player_frames, players, pid, f, b[:2], events)
+                if swap:
+                    swaps.append((c, swap))
+                    p = player_frames[f][pid]
+                    d = math.hypot(b[0] - p[0], b[1] - p[1])
+                    if d <= MEET_M:
+                        continue
+            if d > MEET_MAX_M:
+                # Only StatsBomb puts the ball there (the tracked ball doesn't): its spot
+                # is the weak link, so the touch rule takes the ball to him. With the
+                # tracked ball there too, the player's track is wrong: flagged.
+                if c.get("tr") and c not in too_far:
                     too_far.append(c)
                 continue
             # His centre just behind the ball, on the side he's coming from.
             spot = (b[0] - (b[0] - p[0]) / d * FOOT_M, b[1] - (b[1] - p[1]) / d * FOOT_M)
             moved.append((c, ease_player_to(player_frames, times, pid, f, spot)))
-    return moved, too_far
+    return moved, too_far, swaps
 
 
 PLAYER_TOP_MPS = 9.5  # no player runs faster (the report flags 10.5 over 0.2 s)
@@ -370,7 +385,7 @@ def _crossing(ball, times, start, side):
 
 
 def fly_shot(ball, times, player_frames, kick, shooter, part, side, penalty=False, cleared_after=None,
-             deflections=()):
+             deflections=(), aim=None):
     """Fly the shot from the shooter's foot at frame `kick` to where the path
     (already aimed by the goal-mouth correction) crosses the goal line, then
     into the net. For a goal-line clearance (cleared_after set) the target is
@@ -393,6 +408,8 @@ def fly_shot(ball, times, player_frames, kick, shooter, part, side, penalty=Fals
     if cross is None:
         return out, info
     k_cross, t_cross, target = cross
+    if aim and "y" in aim and cleared_after is None:  # StatsBomb's crossing point, where it has one
+        target = (side * GOAL_LINE_X, aim["y"], aim.get("z", target[2]))
     # The ball at his foot (on the spot for a penalty). If he's far from it, the
     # tracking has him in the wrong place: he's moved onto the ball instead.
     if penalty or shooter not in player_frames[kick]:
@@ -494,9 +511,10 @@ def enforce_touch_rule(ball, times, player_frames, contacts, carries, goal_index
 
     # 2. Every touch up to the shot has the ball within his reach.
     dirty = set(moved)
+    starts = {a for a, b, _ in carries if a != b} | set(keep)  # dead balls start and restarts are taken here
     for c in contacts:
         f = c["f"]
-        if f >= goal_index or f in inside or out[f] is None or c["p"] not in player_frames[f]:
+        if f >= goal_index or f in inside or f in starts or out[f] is None or c["p"] not in player_frames[f]:
             continue
         p = player_frames[f][c["p"]]
         lo, hi = part_z(c["b"])

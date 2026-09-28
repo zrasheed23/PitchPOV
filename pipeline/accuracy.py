@@ -13,13 +13,16 @@ any is flagged and goes on the review list:
 - "sprint": a player moves faster than SPRINT_MPS (over SPRINT_WINDOW frames).
 - "keeper wide": before the kick, a keeper in his own box and outside his
   posts (by more than POST_MARGIN_M) while the ball is in that box.
+- "shot spot": the ball at the kick more than SHOT_SPOT_M from where
+  StatsBomb has the shot taken.
 """
 
 import math
 
 from touch_rule import violations
 
-CHECKS = ("touch far", "no-touch turn", "keeper dive", "statsbomb missing", "crossing off", "sprint", "keeper wide")
+CHECKS = ("touch far", "no-touch turn", "keeper dive", "statsbomb missing", "crossing off", "sprint", "keeper wide",
+          "shot spot")
 TOUCH_M = 1.2
 MATCH_S = 0.5
 CROSS_M = 0.5
@@ -27,6 +30,7 @@ SPRINT_MPS = 10.5  # the fastest footballers top out around 10 m/s
 SPRINT_WINDOW = 6  # frames (0.2 s): single-frame speeds are tracking noise
 HALF_L, POST_Y, AREA_X, AREA_Y = 52.5, 3.66, 52.5 - 16.5, 20.16
 POST_MARGIN_M = 0.3
+SHOT_SPOT_M = 2.0
 
 
 def _side(clip):
@@ -100,6 +104,13 @@ def check_clip(clip, statsbomb=(), placement=None):
         d = math.hypot(y - placement["y"], z - placement.get("z", z))
         if d > CROSS_M:
             found["crossing off"].append(f"{d:.2f} m from StatsBomb")
+
+    shot = next((e for e in statsbomb if e["type"] == "Shot" and e["p"] == clip.get("scorerId")
+                 and (e["raw"].get("shot") or {}).get("outcome", {}).get("name") == "Goal"), None)
+    if shot is not None and fr[kick]["b"]:
+        d = math.dist(fr[kick]["b"][:2], shot["xy"])
+        if d > SHOT_SPOT_M:
+            found["shot spot"].append(f"kicked {d:.1f} m from StatsBomb's shot location")
 
     for pid in names:
         worst = 0.0

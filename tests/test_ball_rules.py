@@ -84,3 +84,24 @@ def test_a_shooter_far_from_the_ball_is_moved_onto_it():
     assert info["shooter_moved"] > 10
     assert math.dist(players[0]["s"], out[0][:2]) < 0.5
     assert players[119]["s"] == (30.0, 10.0)  # eased back onto his track afterwards
+
+
+def test_a_mixed_up_identity_is_swapped_not_teleported():
+    from identity import try_swap
+    players = {"a": {"team": "home", "position": "CB"}, "b": {"team": "home", "position": "CM"},
+               "o": {"team": "away", "position": "CF"}}
+    # PFF has "a" 20 m from the ball the whole clip, "b" at it; StatsBomb has "a" on the ball twice.
+    frames = [{"a": (0.0, 20.0), "b": (10.0 + 0.1 * k, 0.0), "o": (30.0, 0.0)} for k in range(100)]
+    events = [{"f": 20, "p": "a", "xy": (12.0, 0.0)}, {"f": 80, "p": "a", "xy": (18.0, 0.0)}]
+    swap = try_swap(frames, players, "a", 50, (15.0, 0.0), events)
+    assert swap == ("b", 0, 99)
+    assert frames[50]["a"] == (15.0, 0.0) and frames[50]["b"] == (0.0, 20.0)
+
+
+def test_no_swap_when_statsbomb_fits_the_tracks_as_they_are():
+    from identity import try_swap
+    players = {"a": {"team": "home", "position": "CB"}, "b": {"team": "home", "position": "CM"}}
+    frames = [{"a": (0.0, 20.0), "b": (15.0, 0.0)} for _ in range(100)]
+    events = [{"f": 10, "p": "a", "xy": (0.0, 20.0)}, {"f": 90, "p": "a", "xy": (0.0, 20.0)},
+              {"f": 30, "p": "b", "xy": (15.0, 0.0)}, {"f": 70, "p": "b", "xy": (15.0, 0.0)}]
+    assert try_swap(frames, players, "a", 50, (15.0, 0.0), events) is None

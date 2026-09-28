@@ -171,7 +171,7 @@ def apply_restarts(ball, times, player_frames, restarts, next_touch, last_touch=
         f, pid, kind = r["f"], r["p"], r["type"]
         taker = player_frames[f].get(pid)
         ball_at = ball[f][:2] if ball[f] is not None else None
-        spot = _spot(kind, ball_at, taker)
+        spot = r.get("spot") or _spot(kind, ball_at, taker)
         # PFF can log a restart late (or early): unless StatsBomb timed it
         # ("timed"), it's taken at the last frame the tracked ball is still at
         # the spot (in reach of it for a throw-in).

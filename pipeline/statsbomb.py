@@ -129,11 +129,31 @@ def _match_events(game_id, home, away, home_id, roster, touches):
     return tuple(out)
 
 
+YARD = 0.9144
+BOX_UNITS = 18.0  # StatsBomb's pitch markings are in yards: the box is 18 deep, 44 wide
+
+
+def _real(d, box, half_real):
+    """StatsBomb units from a goal line (or the centre line) -> metres: yards
+    within the box, then stretched or squeezed to fit the real pitch."""
+    if d <= box:
+        return d * YARD
+    return box * YARD + (d - box) * (half_real - box * YARD) / ((60.0 if half_real == PITCH_L / 2 else 40.0) - box)
+
+
 def to_pitch(loc, attack):
-    """A StatsBomb location -> our (x, y), for a team attacking x = attack * 52.5."""
-    x = (loc[0] / 120 - 0.5) * PITCH_L
-    y = -(loc[1] / 80 - 0.5) * PITCH_W
-    return attack * x, attack * y
+    """A StatsBomb location -> our (x, y), for a team attacking x = attack * 52.5.
+    Distances from the nearer goal line and from the middle of the pitch are
+    yards inside the box (so the spot is 11 m out, the posts 3.66 m apart)
+    and blend to fit a 105 x 68 pitch toward halfway and the touchlines."""
+    x, y = loc
+    if x >= 60:
+        u = PITCH_L / 2 - _real(120 - x, BOX_UNITS, PITCH_L / 2)
+    else:
+        u = -PITCH_L / 2 + _real(x, BOX_UNITS, PITCH_L / 2)
+    across = _real(abs(y - 40), 22.0, PITCH_W / 2)
+    v = -math.copysign(across, y - 40)  # y > 40 is the attacker's right: -y when attacking +x
+    return attack * u, attack * v
 
 
 def clip_events(sb, frame_ms, player_id, attack, where=None):
@@ -260,7 +280,7 @@ def merge_touches(contacts, sb, ball, tracked, times, last_frame, shooter=None, 
             ball[f] = (e["xy"][0], e["xy"][1], z)
             placed.append(f)
             counts["placed"] += 1
-        c = {"f": f, "p": e["p"], "b": e["b"], "sb": e["type"]} | ({"tr": 1} if best is not None else {})
+        c = {"f": f, "p": e["p"], "b": e["b"], "sb": e["type"], "xy": e["xy"]} | ({"tr": 1} if best is not None else {})
         if e["type"] == "Pass" and (e["raw"].get("pass") or {}).get("height", {}).get("name") == "High Pass":
             lofted[f] = HIGH_PASS_PEAK_M
         touches.append(c)

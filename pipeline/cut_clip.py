@@ -18,11 +18,12 @@ from goal_mouth import correct_goal_mouth, goal_side
 from accuracy import check_clip
 from ball_flight import anchor_frames, count_kinks, straighten_free_flight
 from ball_physics import apply_physics
-from ball_rules import enforce_touch_rule, find_kick, fly_shot, limit_player_speeds, meet_touches, shot_contact
+from ball_rules import FOOT_M, MEET_MAX_M, ease_player_to, enforce_touch_rule, find_kick, fly_shot, limit_player_speeds, meet_touches, shot_contact
 from contacts import align_contacts, find_contacts
 from dribble import rebuild_dribbles
 from estimate_gaps import estimate_gaps
 from goals import clip_name, find_goals
+from identity import try_swap
 from keepers import defending_keeper, ease_to_freeze_frame, place_keepers, plan_dive
 from net import across_the_line
 from penalty import find_keeper, pin_ball, place_players
@@ -504,6 +505,20 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
 
     times = [(frame["videoTimeMs"] - frames[0]["videoTimeMs"]) / 1000 for frame in frames]
     fps = meta["fps"]
+    frame_ms = [f["videoTimeMs"] for f in frames]
+    penalty = bool(goal.get("penalty"))
+    # The shot is where StatsBomb has it taken (statsbomb_shot): PFF's shot event
+    # can be seconds off. From here on goal_index is the kick.
+    event_index = goal_index
+    goal_event = next((e for e in events or [] if e.get("gameEventId") == goal["gameEventId"]), {})
+    direct = (goal_event.get("gameEvents") or {}).get("setpieceType") == "F"
+    shot_spot, shot_move = None, 0.0
+    sb_pre = []
+    if not penalty:
+        shot_index, shot_spot, sb_pre = statsbomb_shot(meta, roster, events, frames, frame_ms, times, players,
+                                                       player_frames, goal, event_index, length, width)
+        if not direct:  # a direct free kick is timed by its restart
+            goal_index = shot_index
     # The scorer's team: for an own goal that's the conceding player on the ball.
     team = [xy for pid, xy in player_frames[goal_index].items() if players[pid]["team"] == goal["side"]]
     paths = {source: drop_out_of_play(ball_path(frames, source, length, width), goal_index) for source in BALL_SOURCES}
@@ -515,9 +530,26 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     # Where the ball is still missing before the shot, estimate it from where it
     # was last seen, where it reappears and who is near it (see estimate_gaps.py).
     chosen, estimated = estimate_gaps(fill_gaps(chosen), times, player_frames, goal_index)
-    penalty = bool(goal.get("penalty"))
     side = goal_side(chosen, goal_index)
     moved = 0.0
+    shot_swap = None
+    if shot_spot is not None and not direct:
+        # The ball at StatsBomb's shot spot and the shooter at it (a well-supported
+        # touch), moving him at most MEET_MAX_M (else an identity swap, else flagged).
+        p = player_frames[goal_index].get(goal["scorerId"])
+        d = math.dist(p, shot_spot) if p is not None else math.inf
+        if d > MEET_MAX_M:
+            shot_swap = try_swap(player_frames, players, goal["scorerId"], goal_index, shot_spot, sb_pre)
+            p = player_frames[goal_index].get(goal["scorerId"])
+            d = math.dist(p, shot_spot) if p is not None else math.inf
+        if d <= MEET_MAX_M:
+            b = chosen[goal_index]
+            if b is None or math.dist(b[:2], shot_spot) > SHOT_SPOT_M:
+                chosen[goal_index] = (shot_spot[0], shot_spot[1], b[2] if b else 0.11)
+            if d > SHOT_SPOT_M:
+                shot_move = ease_player_to(player_frames, times, goal["scorerId"], goal_index,
+                                           (shot_spot[0] + (p[0] - shot_spot[0]) / d * FOOT_M,
+                                            shot_spot[1] + (p[1] - shot_spot[1]) / d * FOOT_M))
     if penalty:
         # A still ball on the spot and a legal setup until the kick (penalty.py).
         chosen = pin_ball(chosen, goal_index, side)
@@ -525,7 +557,6 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
                              [pid for pid, p in players.items() if p["position"] == "GK" and pid != goal["scorerId"]])
         player_frames, moved = place_players(player_frames, times, goal_index, side, goal["scorerId"], keeper)
     # Keepers stay in their area, on the ball-goal line when it's in their half (keepers.py).
-    frame_ms = [f["videoTimeMs"] for f in frames]
     logged = [(c["f"], c["p"]) for c in find_contacts(events or [], frame_ms, set(players))]
     keeper_moves = place_keepers(player_frames, times, chosen, [pid for pid, p in players.items() if p["position"] == "GK"],
                                  goal_index, logged, skip={keeper} if penalty else set())
@@ -540,6 +571,8 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         jumps += after
     # The ball only changes direction when someone touches it: straighten it between touches.
     contacts = find_contacts(events or [], frame_ms, set(players))
+    if abs(goal_index - event_index) > 3:  # PFF's shot event was off: its touch isn't the shot
+        contacts = [c for c in contacts if not (c["p"] == goal["scorerId"] and abs(c["f"] - event_index) <= 3)]
     # How often the logged toucher is within 3 m of the tracked ball: checks the names.
     raw_ball = fill_gaps(paths["raw"])
     near = [math.dist(raw_ball[c["f"]][:2], player_frames[c["f"]][c["p"]]) < 3 for c in contacts
@@ -551,7 +584,8 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     contacts, ball, contact_fixes = align_contacts(contacts, ball, tracked, player_frames, times, goal_index)
     # StatsBomb's on-ball actions are the primary touches (statsbomb.merge_touches).
     # The kick: the frame the tracked ball leaves the scorer (ball_rules.find_kick).
-    kick0 = goal_index if penalty else find_kick(ball, times, player_frames, goal["scorerId"], goal_index, side=side)
+    kick0 = goal_index if penalty or (shot_spot is not None and not direct) else find_kick(ball, times, player_frames, goal["scorerId"],
+                                                                         goal_index, side=side)
     sb_clip, sb_shift = clip_statsbomb(meta, roster, events, frame_ms, players, player_frames, ball, tracked, goal, side)
     contacts, ball, sb_placed, lofted, sb_counts = merge_touches(
         contacts, [] if penalty else sb_clip, ball, tracked, times, max(goal_index, kick0), goal["scorerId"], player_frames)
@@ -571,8 +605,14 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         sb_touch = [c for c in contacts if c.get("sb") and c["p"] == r["p"] and abs(c["f"] - r["f"]) <= round(1.5 * fps)
                     and (r["out"] is None or c["f"] > r["out"])]
         if sb_touch:
-            r["f"] = min(sb_touch, key=lambda c: abs(c["f"] - r["f"]))["f"]
+            t = min(sb_touch, key=lambda c: abs(c["f"] - r["f"]))
+            r["f"] = t["f"]
             r["timed"] = True
+            if r["type"] == "F" and "xy" in t:  # and a free kick is taken where StatsBomb has it
+                r["spot"] = tuple(t["xy"])
+    for r in restarts:  # a goal straight from a free kick: StatsBomb's spot
+        if direct and shot_spot is not None and r["f"] >= goal_index - 3:
+            r["spot"] = shot_spot
     restart_info, dead = apply_restarts(ball, times, player_frames, restarts,
                                         lambda f: next((c["f"] for c in contacts if c["f"] > f), None),
                                         lambda f: next((c["f"] for c in reversed(contacts) if c["f"] < f), None),
@@ -582,13 +622,13 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
                 and not any(c["p"] == r["p"] and abs(c["f"] - r["f"]) <= 12 for r in restarts)]
     contacts = sorted(contacts + [{"f": r["f"], "p": r["p"], "b": r["b"]} | ({"sb": "Pass"} if r.get("timed") else {})
                                   for r in restarts], key=lambda c: c["f"])
-    direct = any(r["f"] >= goal_index - 3 for r in restarts)  # a goal straight from a free kick
+    direct = direct or any(r["f"] >= goal_index - 3 for r in restarts)  # a goal straight from a free kick
     # The shot: PFF can log it after the ball has left his foot (ball_rules.find_kick).
     shot = shot_contact(contacts, goal, goal_index)
     if shot is None:
         shot = {"f": goal_index, "p": goal["scorerId"], "b": "F"}
         contacts = sorted(contacts + [shot], key=lambda c: c["f"])
-    if not penalty and not direct:
+    if not penalty and not direct and shot_spot is None:
         kick = find_kick(ball, times, player_frames, shot["p"], shot["f"], shot["b"], side)
         contacts = [c for c in contacts if c is shot or c["f"] < kick]
         shot["f"] = kick
@@ -634,7 +674,7 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     if clearer is None:
         cleared_after = None
     ball, shot_info = fly_shot(ball, times, player_frames, shot["f"], shot["p"], shot["b"], side, penalty or direct,
-                               cleared_after, deflections)
+                               cleared_after, deflections, aim)
     # After the kick only a deflection with the ball near him touches it (the
     # shot is logged twice, or by a player the ball never reaches).
     # A goal-line clearance: the defender's touch where the ball turns back.
@@ -648,8 +688,8 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     keepers = {pid: (1 if player_frames[goal_index][pid][0] > 0 else -1) for pid, p in players.items()
                if p["position"] == "GK" and pid in player_frames[goal_index]}
     # Every touch meets the player: players onto a well-supported ball (ball_rules.meet_touches).
-    met, too_far = meet_touches(ball, times, player_frames, [c for c in contacts if c["f"] < shot["f"]] + clearance,
-                                len(frames) - 1, skip={r["f"] for r in restarts})
+    met, too_far, swaps = meet_touches(ball, times, player_frames, [c for c in contacts if c["f"] < shot["f"]] + clearance,
+                                       len(frames) - 1, skip={r["f"] for r in restarts}, players=players, events=sb_clip)
     # Checked and fixed on the clip as written (2 decimals; times to the ms).
     times_out = [round(t, 3) for t in times]
     players_out = [{pid: (round(x, 2), round(y, 2)) for pid, (x, y) in ps.items()} for ps in player_frames]
@@ -711,12 +751,13 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         "clock": goal["clock"],
         "period": goal["period"],
         "fps": meta["fps"],
-        "goalFrame": goal_index,
+        "goalFrame": goal_index,  # the shot (StatsBomb's spot and time where it has them)
+        "eventFrame": event_index,  # PFF's shot event
         "goalT": out_frames[goal_index]["t"],
         "ballSource": ball_source,
         "ballCorrected": correction["corrected"],
         "ballEstimated": estimated,  # [first, last] frame ranges where the ball position is estimated
-        "contacts": contacts,  # "s": 1 marks a touch added for a dribble
+        "contacts": [{k: v for k, v in c.items() if k not in ("xy", "tr")} for c in contacts],  # "s": 1 marks a touch added for a dribble
         "carries": carries,  # [first, last, player id]: dribbles the viewer holds at the player's feet
         "restarts": restart_info,  # throw-ins, corners, goal kicks, free kicks: see restarts.py
         "cleared": cleared_after is not None,  # a goal-line clearance: the ball comes back out
@@ -758,7 +799,11 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         "met": [(players[c["p"]]["name"], c["f"], round(m, 2)) for c, m in met],
         "too_far": [(players[c["p"]]["name"], c["f"]) for c in too_far],
         "sped": {players[pid]["name"]: round(m, 2) for pid, m in sped.items()},
-        "kick_shift": round(times[shot["f"]] - times[goal_index], 2),
+        "kick_shift": round(times[shot["f"]] - times[event_index], 2),
+        "shot_move": round(shot_move, 2),
+        "swaps": [(players[c["p"]]["name"], players[o]["name"], a, b) for c, (o, a, b) in swaps]
+                 + ([(players[goal["scorerId"]]["name"], players[shot_swap[0]]["name"], shot_swap[1], shot_swap[2])]
+                    if shot_swap else []),
         "rule_before": rule_before,
         "rule_breaks": rule_breaks,
         "rule_counts": rule_counts,
@@ -779,6 +824,43 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         "swapped": votes is not None,
     }
     return clip, stats
+
+
+SHOT_SPOT_M = 2.0
+SHOT_SEARCH_S = 1.0
+
+
+def statsbomb_shot(meta, roster, events, frames, frame_ms, times, players, player_frames, goal, event_index,
+                   length, width):
+    """(shot frame, StatsBomb's shot location on our pitch, the clip's
+    StatsBomb events) for a goal: within
+    SHOT_SEARCH_S of PFF's shot event or of StatsBomb's (lined up with the
+    tracking), the frame where the scorer and the tracked ball are nearest the
+    spot StatsBomb has the shot taken from. (event_index, None, events) without it."""
+    raw = drop_repeats(ball_path(frames, "raw", length, width))
+    smoothed = ball_path(frames, "smoothed", length, width)
+    prelim, _ = borrow_gaps(raw, smoothed, len(raw))
+    tracked = [b is not None for b in prelim]
+    prelim = fill_gaps(prelim)
+    side = goal_side(prelim, event_index)
+    sb, _ = clip_statsbomb(meta, roster, events, frame_ms, players, player_frames, prelim, tracked, goal, side)
+    shot = next((e for e in sb if e["type"] == "Shot" and e["p"] == goal["scorerId"]
+                 and (e["raw"].get("shot") or {}).get("outcome", {}).get("name") == "Goal"), None)
+    if shot is None:
+        return event_index, None, sb
+    spot = shot["xy"]
+    last = len(frames) - 1 - int(round(0.5 * meta["fps"]))  # leave the ball time to reach the line
+    window = [k for k in range(len(frames)) if k <= last and (abs(times[k] - times[event_index]) <= SHOT_SEARCH_S
+                                                              or abs(times[k] - times[shot["f"]]) <= SHOT_SEARCH_S)]
+
+    def miss(k):
+        p = player_frames[k].get(goal["scorerId"])
+        d = math.dist(p, spot) if p is not None else 50.0
+        b = prelim[k]
+        return d + (math.dist(b[:2], spot) if tracked[k] and b is not None else d + 2.0)
+
+    best = min(window, key=lambda k: (miss(k), abs(k - event_index)), default=event_index)
+    return best, spot, sb
 
 
 def clip_statsbomb(meta, roster, events, frame_ms, players, player_frames, ball, tracked, goal, side):

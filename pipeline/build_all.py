@@ -297,14 +297,23 @@ def report(matches, results, problems, skipped, n_games):
 
         met = [(g, s) for g, s in results if s["met"]]
         print(f"touches meeting the player: {sum(len(s['met']) for _, s in met)} players moved onto a well-supported "
-              f"ball in {len(met)} clips (max {max((m for _, s in met for _, _, m in s['met']), default=0):.1f} m); "
-              f"{sum(len(s['too_far']) for _, s in results)} left flagged (more than 10 m off, not backed by the "
-              f"tracking); most changed:")
+              f"ball in {len(met)} clips (max {max((m for _, s in met for _, _, m in s['met']), default=0):.1f} m, "
+              f"never over 5 m); {sum(len(s['too_far']) for _, s in results)} left flagged (more than 5 m off with "
+              f"the tracked ball backing StatsBomb, no teammate there); most changed:")
         top(met, lambda s: max(m for _, _, m in s["met"]),
             lambda s: ", ".join(f"{n} {m:.1f} m" for n, _, m in sorted(s["met"], key=lambda x: -x[2])[:2]))
         moved_kick = [(g, s) for g, s in results if abs(s["kick_shift"]) > 0.3]
-        print(f"kick found from the tracking, more than 0.3 s from PFF's shot event: {len(moved_kick)} clips; most:")
+        print(f"shot frame from StatsBomb's shot location (or the tracking), more than 0.3 s from PFF's shot event: "
+              f"{len(moved_kick)} clips; most:")
         top(moved_kick, lambda s: abs(s["kick_shift"]), lambda s: f"{s['kick_shift']:+.2f} s")
+        shot_moved = [(g, s) for g, s in results if s["shot_move"]]
+        print(f"shooter moved onto StatsBomb's shot spot (at most 5 m): {len(shot_moved)} clips; most:")
+        top(shot_moved, lambda s: s["shot_move"], lambda s: f"{s['shot_move']:.1f} m")
+        swapped_ids = [(g, s) for g, s in results if s["swaps"]]
+        print(f"PFF identity mix-ups swapped (teammate at a well-supported touch, StatsBomb fits better): "
+              f"{sum(len(s['swaps']) for _, s in swapped_ids)} in {len(swapped_ids)} clips; longest:")
+        top(swapped_ids, lambda s: max(b - a for _, _, a, b in s["swaps"]),
+            lambda s: "; ".join(f"{x} <-> {y} frames {a}-{b}" for x, y, a, b in s["swaps"][:2]))
         sped = [(g, s) for g, s in results if s["sped"]]
         print(f"players held to a 9.5 m/s sprint: {sum(len(s['sped']) for _, s in sped)} tracks in {len(sped)} clips; most:")
         top(sped, lambda s: max(s["sped"].values()),
