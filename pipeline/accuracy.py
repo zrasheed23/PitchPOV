@@ -32,7 +32,7 @@ CHECKS = ("touch far", "no-touch turn", "keeper dive", "statsbomb missing", "cro
           "shot spot", "body pass")
 TOUCH_M = 1.2
 MATCH_S = 0.5
-CROSS_M = 0.5
+CROSS_M = 0.6
 SPRINT_MPS = 10.5  # the fastest footballers top out around 10 m/s
 SPRINT_WINDOW = 6  # frames (0.2 s): single-frame speeds are tracking noise
 HALF_L, POST_Y, AREA_X, AREA_Y = 52.5, 3.66, 52.5 - 16.5, 20.16
@@ -114,7 +114,8 @@ def check_clip(clip, statsbomb=(), placement=None):
     touched = [(c["f"], c["p"]) for c in clip.get("contacts", [])]
     window = MATCH_S / (times[1] - times[0]) if len(times) > 1 else 15
     for e in statsbomb:
-        if not e["on_ball"] or e["f"] >= kick - 3:
+        goal_shot = e["type"] == "Shot" and (e["raw"].get("shot") or {}).get("outcome", {}).get("name") == "Goal"
+        if not e["on_ball"] or e["f"] >= kick - 3 or goal_shot:  # the goal is the clip's own shot
             continue
         if not any(p == e["p"] and abs(f - e["f"]) <= window for f, p in touched):
             found["statsbomb missing"].append(f"frame {e['f']} {e['type']} by {names.get(e['p'], e['p'])}")

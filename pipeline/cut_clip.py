@@ -24,7 +24,7 @@ from dribble import rebuild_dribbles
 from estimate_gaps import estimate_gaps
 from goals import clip_name, find_goals
 from identity import try_swap
-from keepers import beat_keeper, defending_keeper, ease_to_freeze_frame, place_keepers, plan_dive
+from keepers import DIVE_HOLD_S, beat_keeper, defending_keeper, ease_to_freeze_frame, place_keepers, plan_dive
 from net import across_the_line
 from penalty import find_keeper, pin_ball, place_players
 from restarts import apply_restarts, find_restarts, redraw_roll_out
@@ -524,6 +524,14 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     paths = {source: drop_out_of_play(ball_path(frames, source, length, width), goal_index) for source in BALL_SOURCES}
     raw_distance = raw_ball_distance(paths["raw"], team, goal_index)
     ball_source, auto_source = pick_ball_source(raw_distance, override)
+    if shot_spot is not None and not (override or {}).get("ballSource"):
+        # StatsBomb says where the shot was taken: the feed with its ball there wins
+        # (the smoothed feed follows PFF's players, who can be in the wrong place).
+        near = {src: math.dist(fill_gaps(path)[goal_index][:2], shot_spot) if fill_gaps(path)[goal_index] else math.inf
+                for src, path in paths.items()}
+        best = min(near, key=near.get)
+        if near[best] + SOURCE_MARGIN_M < near[ball_source]:
+            ball_source = auto_source = best
     other = "raw" if ball_source == "smoothed" else "smoothed"
     chosen, borrowed = borrow_gaps(paths[ball_source], paths[other], goal_index)
     tracked = [b is not None for b in chosen]  # frames where a feed really has the ball
@@ -701,7 +709,7 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
               + ([shot["f"]] if shot_info["at_foot_moved"] > 0.05 else []))
     ball, contacts, rule_counts = enforce_touch_rule(ball, times_out, players_out, contacts, held, shot["f"],
                                                      keepers, moved=redraw, keep=[r["f"] for r in restarts],
-                                                     leave=too_far)
+                                                     leave=too_far, add_touches=not sb_clip)
     # How the scorer strikes it: StatsBomb's shot technique (volleys.py).
     final_shot = next((c for c in contacts if (c["f"], c["p"]) == (shot["f"], shot["p"])), None)
     if final_shot is None:
@@ -724,7 +732,8 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     for c in contacts:
         fixed.setdefault(c["p"], set()).add(c["f"])
     if defender:
-        fixed.setdefault(defender, set()).update(range(shot["f"], len(frames)))  # the keeper's spot and dive
+        hold = next((k for k in range(shot["f"], len(frames)) if times[k] - times[shot["f"]] >= DIVE_HOLD_S), len(frames) - 1)
+        fixed.setdefault(defender, set()).update(range(shot["f"], hold + 1))  # the keeper's spot and dive
     # Nor through anyone else: nudge whoever it would pass through (ball_rules.clear_bodies),
     # then hold everyone to a sprint, then settle any nudge the speed cap undid.
     crossing = next((k for k in range(shot["f"] + 1, len(ball)) if ball[k] is not None
@@ -843,6 +852,9 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
 
 SHOT_SPOT_M = 2.0
 SHOT_SEARCH_S = 1.0
+SCORER_WEIGHT = 0.3
+SOURCE_MARGIN_M = 2.0  # the other feed's ball must be this much nearer StatsBomb's shot spot to switch
+UNTRACKED_M = 0.5  # a gap-filled ball counts as this much farther
 
 
 def statsbomb_shot(meta, roster, events, frames, frame_ms, times, players, player_frames, goal, event_index,
@@ -850,8 +862,8 @@ def statsbomb_shot(meta, roster, events, frames, frame_ms, times, players, playe
     """(shot frame, StatsBomb's shot location on our pitch, the clip's
     StatsBomb events) for a goal: within
     SHOT_SEARCH_S of PFF's shot event or of StatsBomb's (lined up with the
-    tracking), the frame where the scorer and the tracked ball are nearest the
-    spot StatsBomb has the shot taken from. (event_index, None, events) without it."""
+    tracking), the frame where the ball is nearest the spot StatsBomb has the
+    shot taken from (the scorer's tracked position breaks ties). (event_index, None, events) without it."""
     raw = drop_repeats(ball_path(frames, "raw", length, width))
     smoothed = ball_path(frames, "smoothed", length, width)
     prelim, _ = borrow_gaps(raw, smoothed, len(raw))
@@ -869,10 +881,12 @@ def statsbomb_shot(meta, roster, events, frames, frame_ms, times, players, playe
                                                               or abs(times[k] - times[shot["f"]]) <= SHOT_SEARCH_S)]
 
     def miss(k):
+        # The ball at the spot decides it (it's measured; PFF often has the scorer
+        # somewhere else); the scorer only breaks ties.
         p = player_frames[k].get(goal["scorerId"])
-        d = math.dist(p, spot) if p is not None else 50.0
         b = prelim[k]
-        return d + (math.dist(b[:2], spot) if tracked[k] and b is not None else d + 2.0)
+        d_ball = math.dist(b[:2], spot) + (0.0 if tracked[k] else UNTRACKED_M) if b is not None else 50.0
+        return d_ball + SCORER_WEIGHT * (math.dist(p, spot) if p is not None else 50.0)
 
     best = min(window, key=lambda k: (miss(k), abs(k - event_index)), default=event_index)
     return best, spot, sb

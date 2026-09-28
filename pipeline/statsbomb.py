@@ -39,12 +39,15 @@ def _ts(stamp):
 
 
 @lru_cache(maxsize=None)
-def _match_id(home, away):
+def _match_id(home, away, date):
+    """StatsBomb's match id: same two teams on the same day (Croatia and
+    Morocco played twice)."""
     path = CACHE / "matches" / str(COMPETITION) / f"{SEASON}.json"
     if not path.exists():
         return None
     for m in json.loads(path.read_text()):
-        if {m["home_team"]["home_team_name"], m["away_team"]["away_team_name"]} == {home, away}:
+        if ({m["home_team"]["home_team_name"], m["away_team"]["away_team_name"]} == {home, away}
+                and m["match_date"] == date[:10]):
             return m["match_id"]
     return None
 
@@ -76,7 +79,7 @@ def match_events(meta, roster, events):
     """Every StatsBomb event with a player and a location, as dicts {"period",
     "t": PFF video time (s), "side", "number", "type", "on_ball", "b": body
     part, "loc", "raw": the StatsBomb event}; None if the match isn't cached."""
-    return _match_events(str(meta["id"]), meta["homeTeam"]["name"], meta["awayTeam"]["name"],
+    return _match_events(str(meta["id"]), meta["homeTeam"]["name"], meta["awayTeam"]["name"], meta["date"],
                          meta["homeTeam"]["id"], _roster_key(roster), _events_key(events))
 
 
@@ -95,8 +98,8 @@ def _events_key(events):
 
 
 @lru_cache(maxsize=None)
-def _match_events(game_id, home, away, home_id, roster, touches):
-    sb_id = _match_id(home, away)
+def _match_events(game_id, home, away, date, home_id, roster, touches):
+    sb_id = _match_id(home, away, date)
     ev_path, lu_path = CACHE / "events" / f"{sb_id}.json", CACHE / "lineups" / f"{sb_id}.json"
     if sb_id is None or not ev_path.exists() or not lu_path.exists():
         return None
@@ -249,7 +252,11 @@ def merge_touches(contacts, sb, ball, tracked, times, last_frame, shooter=None, 
         if e["p"] == shooter and last_frame - e["f"] <= same:
             continue  # the shot itself
         if wanted and wanted[-1]["p"] == e["p"] and e["f"] - wanted[-1]["f"] <= 3:
-            continue  # a recovery and the carry or pass that starts from it: one touch
+            # A receipt (or recovery) and the pass, shot or clearance that comes off
+            # it at once: one touch, with the action's body part (a flick-on is a header).
+            if e["b"] != "F" and e["type"] in ("Pass", "Shot", "Clearance", "Block"):
+                wanted[-1] = dict(wanted[-1], b=e["b"])
+            continue
         wanted.append(e)
     for n, e in enumerate(wanted):
         # Timed between its neighbours, so the touches keep StatsBomb's order.

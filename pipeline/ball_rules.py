@@ -552,13 +552,16 @@ def fly_shot(ball, times, player_frames, kick, shooter, part, side, penalty=Fals
 
 
 def enforce_touch_rule(ball, times, player_frames, contacts, carries, goal_index, keepers, moved=(), keep=(),
-                       leave=()):
+                       leave=(), add_touches=True):
     """Fix every rule break before the shot (goal_index: the frame the shot is
     kicked, whose ball stays put). keepers: {player id: +1/-1, the goal he
     defends}. moved: touch frames whose ball was moved (the shot, put at his
     foot): the ball is re-drawn to meet it. keep: touch frames never dropped
     (restarts). leave: touches whose ball stays where it is though the player
-    is far (a well-supported ball, meet_touches). Returns (ball, contacts, counts)."""
+    is far (a well-supported ball, meet_touches). add_touches: False when
+    StatsBomb covers the clip (it logs every on-ball action, so a touch added
+    for a turn would be one that didn't happen): every break is joined as one
+    kick instead. Returns (ball, contacts, counts)."""
     out = list(ball)
     contacts = [dict(c) for c in contacts]
     counts = {"moved_to_foot": 0, "touches_added": 0, "joined": 0, "straight": 0, "unconnectable": 0}
@@ -607,7 +610,7 @@ def enforce_touch_rule(ball, times, player_frames, contacts, carries, goal_index
         part_at = {c["f"]: c["b"] for c in contacts}
         for a, b, turns in stretches:
             added = []
-            for v in turns:
+            for v in (turns if add_touches else ()):
                 if any(abs(v - f) < 2 * WINDOW + 2 for f in added + [a, b]):
                     continue
                 best = None
