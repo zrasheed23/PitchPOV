@@ -12,17 +12,20 @@ import {
   BLOCK_LENGTH_S,
   DIVE_LENGTH_S,
   PLAYER_HEIGHT,
+  SCISSOR_AFTER_S,
+  SCISSOR_BEFORE_S,
   THROW_AFTER_S,
-  VOLLEY_AFTER_S,
-  VOLLEY_BEFORE_S,
+  BICYCLE_AFTER_S,
+  BICYCLE_BEFORE_S,
   type Rig,
+  animateBicycle,
   animateBlock,
   animateDive,
   animateKeeper,
   animateRig,
+  animateScissor,
   animateThrow,
   animateTouch,
-  animateVolley,
 } from './rig'
 
 const TOUCH_WINDOW_S = 0.25 // a touch is animated this long either side
@@ -302,8 +305,10 @@ export function Replay({ clip, track, playback, ball, onEnded }: ReplayProps) {
       const k = dive && dive.keeperId === id ? pb.time - dive.start : -1
       const th = throws.find((w) => w.p === id && pb.time > w.t - w.hold - 0.3 && pb.time < w.t + THROW_AFTER_S)
       const vo = touches.find(
-        (c) =>
-          (c.v === 'scissor' || c.v === 'bicycle') && c.p === id && pb.time > c.t - VOLLEY_BEFORE_S && pb.time < c.t + VOLLEY_AFTER_S,
+        (c) => c.v === 'bicycle' && c.p === id && pb.time > c.t - BICYCLE_BEFORE_S && pb.time < c.t + BICYCLE_AFTER_S,
+      )
+      const sc = touches.find(
+        (c) => c.v === 'scissor' && c.p === id && pb.time > c.t - SCISSOR_BEFORE_S && pb.time < c.t + SCISSOR_AFTER_S,
       )
       if (dive && dive.kind === 'dive' && k >= 0 && k < DIVE_LENGTH_S) {
         g.rotation.y = yaw.current[id] = dive.yaw
@@ -312,10 +317,20 @@ export function Replay({ clip, track, playback, ball, onEnded }: ReplayProps) {
         g.rotation.y = yaw.current[id] = dive.yaw
         animateRig(rig, 0, 0)
         animateBlock(rig, k, dive.height)
+      } else if (sc) {
+        // Side-on: the ball goes off to the side of his kicking leg's swing
+        // (his left for a right-footed scissor). Forward in pitch (x, y) is (-sin yaw, cos yaw).
+        const foot = sc.b === 'L' ? -1 : 1
+        if (sc.dir) {
+          const fx = foot > 0 ? sc.dir[1] : -sc.dir[1]
+          const fy = foot > 0 ? -sc.dir[0] : sc.dir[0]
+          g.rotation.y = yaw.current[id] = Math.atan2(-fx, fy)
+        }
+        animateScissor(rig, pb.time - sc.t, foot)
       } else if (vo) {
-        // His back to where the ball goes: the kick goes up and over him.
+        // Bicycle: his back to where the ball goes, the kick up and over him.
         if (vo.dir) g.rotation.y = yaw.current[id] = Math.atan2(vo.dir[0], -vo.dir[1])
-        animateVolley(rig, pb.time - vo.t, vo.b === 'L' ? -1 : 1, vo.v === 'bicycle')
+        animateBicycle(rig, pb.time - vo.t, vo.b === 'L' ? -1 : 1)
       } else if (th) {
         if (th.dir[0] || th.dir[1]) g.rotation.y = yaw.current[id] = Math.atan2(-th.dir[0], th.dir[1])
         animateRig(rig, 0, 0)

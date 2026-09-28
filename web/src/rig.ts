@@ -156,26 +156,25 @@ export function animateThrow(rig: Rig, k: number, hold: number) {
   rig.kneeL.rotation.x = rig.kneeR.rotation.x = -0.05 - wind * 0.15
 }
 
-// Scissor / overhead kick, k seconds from the contact (negative before).
+// Bicycle (overhead) kick, k seconds from the contact (negative before).
 // `side` +1 kicks with the right leg. Take off (from -0.45 s), body back to
 // horizontal with the hips at ~1 m at the contact, kicking leg swinging up and
-// over while the other drops (the scissor), fall onto the back (to +0.45 s),
-// lie, get up (+1.0 to +1.8 s). The body pivots at the feet, so it is shifted
-// to keep its middle on the tracked position.
-export const VOLLEY_BEFORE_S = 0.45
-export const VOLLEY_AFTER_S = 1.8
+// over while the other drops, fall onto the back (to +0.45 s), lie, get up
+// (+1.0 to +1.8 s). The body pivots at the feet, so it is shifted to keep its
+// middle on the tracked position. (The scissor kick is animateScissor.)
+export const BICYCLE_BEFORE_S = 0.45
+export const BICYCLE_AFTER_S = 1.8
 
-export function animateVolley(rig: Rig, k: number, side: 1 | -1, bicycle = false) {
+export function animateBicycle(rig: Rig, k: number, side: 1 | -1) {
   const load = ease((k + 0.45) / 0.08) * (1 - ease((k + 0.37) / 0.08))
   const air = ease((k + 0.4) / 0.4) // leaving the ground, tipping back
   const up = 1 - ease((k - 1.0) / 0.8) // 1 until he gets up
-  // Scissor: ~83 degrees back and rolled a little onto his side. Bicycle: flat
-  // on his back, square, the leg going straight over his head.
-  const tilt = Math.min(air, up) * (bicycle ? 1.6 : 1.45)
+  // Flat on his back, square, the leg going straight over his head.
+  const tilt = Math.min(air, up) * 1.6
   const fall = ease((k - 0.05) / 0.4) // after the contact he drops onto his back
   const hips = 1.0 * (1 - fall) + 0.12 * fall
   rig.body.rotation.x = tilt
-  rig.body.rotation.z = (bicycle ? 0 : side * 0.35) * Math.min(air, up) // scissor: rolled away from the kicking leg
+  rig.body.rotation.z = 0
   // Hips at `hips` metres: the pivot is at the feet, so lift the body by the
   // hips' drop and move it forward by half its swing back.
   rig.body.position.y = Math.max(0, (hips - 0.92 * Math.cos(tilt)) * Math.min(air, up) - load * 0.12)
@@ -246,4 +245,53 @@ export function animateKeeper(rig: Rig, phase: number, speed: number, hop: numbe
     // Up and down on the balls of his feet as the shot is struck.
     rig.body.position.y += Math.sin(((hop + 0.3) / 0.3) * Math.PI) * 0.1
   }
+}
+
+// Scissor kick, k seconds from the contact (negative before). `side` +1 kicks
+// with the right leg. Side-on to the shot: the body rolls sideways about the
+// forward axis (away from the kicking leg) and leans back a little, 45-60
+// degrees from vertical at most, never flat. The other leg lifts first
+// (-0.3 s), then the kicking leg swings across in front of him at
+// hip-to-chest height and meets the ball side-on at k = 0, both feet off the
+// ground; he lands on his hip and side (to +0.4 s), lies briefly, gets up (to +1.6 s).
+export const SCISSOR_BEFORE_S = 0.4
+export const SCISSOR_AFTER_S = 1.6
+
+export function animateScissor(rig: Rig, k: number, side: 1 | -1) {
+  const load = ease((k + 0.4) / 0.08) * (1 - ease((k + 0.32) / 0.08))
+  const air = ease((k + 0.32) / 0.32) // leaves the ground, rolling onto his side
+  const land = ease((k - 0.05) / 0.35) // drops onto his hip after the contact
+  const up = 1 - ease((k - 0.9) / 0.7) // 1 until he gets up
+  const on = Math.min(air, up)
+  // Sideways roll grows as he goes over; the lean back stays small.
+  const roll = on * (0.85 + 0.35 * land) // ~49 deg in the air, ~69 deg lying on his side
+  const back = on * 0.35 * (1 - 0.5 * land)
+  rig.body.rotation.z = side * roll // right-footed: tips to his left
+  rig.body.rotation.x = back
+  // Both feet off the ground at the contact (~0.45 m), then down on his hip.
+  const lift = Math.sin(Math.min(Math.max((k + 0.32) / 0.5, 0), 1) * Math.PI) * 0.45
+  rig.body.position.y = Math.max(0, lift * (1 - land) + 0.1 * land * up - load * 0.1)
+  rig.body.position.x = -side * Math.sin(roll) * 0.35 // keep his middle over the tracked spot
+  rig.body.position.z = 0
+
+  const kick = side > 0 ? rig.hipR : rig.hipL
+  const kickKnee = side > 0 ? rig.kneeR : rig.kneeL
+  const other = side > 0 ? rig.hipL : rig.hipR
+  const otherKnee = side > 0 ? rig.kneeL : rig.kneeR
+  // The other leg lifts first, then drops as the kicking leg comes through (the scissor).
+  const lead = ease((k + 0.35) / 0.15) * (1 - ease((k + 0.1) / 0.2))
+  other.rotation.x = up * (1.2 * lead + 0.3 * land)
+  other.rotation.z = 0
+  otherKnee.rotation.x = -up * (0.7 * lead + 0.4 * land + 0.1)
+  // Kicking leg: cocked back, then across the front of the body at hip-to-chest height.
+  const swing = ease((k + 0.22) / 0.27) // through the ball at k ~ +0.05
+  const after = ease((k - 0.1) / 0.4)
+  kick.rotation.x = up * ((-0.4 + 1.9 * swing) * (1 - after) + 0.5 * after)
+  kick.rotation.z = -side * up * 0.6 * swing * (1 - after) // across to the other side
+  kickKnee.rotation.x = -up * (1.0 * (1 - swing) + 0.15) * (1 - 0.5 * after)
+  // Arms out for balance, then the lower arm braces the landing.
+  rig.shoulderL.rotation.z = -ARM_REST_Z - 1.0 * on
+  rig.shoulderR.rotation.z = ARM_REST_Z + 1.0 * on
+  rig.shoulderL.rotation.x = rig.shoulderR.rotation.x = 0.4 * land * up
+  rig.elbowL.rotation.x = rig.elbowR.rotation.x = 0.3
 }
