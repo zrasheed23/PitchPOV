@@ -22,6 +22,7 @@ from dribble import rebuild_dribbles
 from estimate_gaps import estimate_gaps
 from goals import clip_name, find_goals
 from penalty import find_keeper, pin_ball, place_players
+from restarts import apply_restarts, find_restarts, redraw_roll_out
 from touch_rule import violations
 import relabel
 
@@ -526,7 +527,8 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         ball, after = smooth_jumps(ball, times, start=correction["cleared_after"])
         jumps += after
     # The ball only changes direction when someone touches it: straighten it between touches.
-    contacts = find_contacts(events or [], [f["videoTimeMs"] for f in frames], set(players))
+    frame_ms = [f["videoTimeMs"] for f in frames]
+    contacts = find_contacts(events or [], frame_ms, set(players))
     # How often the logged toucher is within 3 m of the tracked ball: checks the names.
     raw_ball = fill_gaps(paths["raw"])
     near = [math.dist(raw_ball[c["f"]][:2], player_frames[c["f"]][c["p"]]) < 3 for c in contacts
@@ -540,12 +542,22 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         contacts = [{**c, "f": max(c["f"], goal_index)} for c in contacts]
         contacts = [c for n, c in enumerate(contacts) if not any(d["f"] == c["f"] and d["p"] == c["p"]
                                                                   for d in contacts[:n])]
+    # Restarts: the ball stops out of play and is put back by the taker (restarts.py).
+    restarts = [] if penalty else find_restarts(events or [], frame_ms, goal_index, set(players))
+    restart_info, dead = apply_restarts(ball, times, player_frames, restarts,
+                                        lambda f: next((c["f"] for c in contacts if c["f"] > f), None),
+                                        lambda f: next((c["f"] for c in reversed(contacts) if c["f"] < f), None))
+    dead_ball = {k: ball[k] for a, b in dead for k in range(a, b + 1)}
+    contacts = [c for c in contacts if not any(a < c["f"] <= b for a, b in dead)
+                and not any(c["p"] == r["p"] and abs(c["f"] - r["f"]) <= 12 for r in restarts)]
+    contacts = sorted(contacts + [{"f": r["f"], "p": r["p"], "b": r["b"]} for r in restarts], key=lambda c: c["f"])
+    direct = any(r["f"] >= goal_index - 3 for r in restarts)  # a goal straight from a free kick
     # The shot: PFF can log it after the ball has left his foot (ball_rules.find_kick).
     shot = shot_contact(contacts, goal, goal_index)
     if shot is None:
         shot = {"f": goal_index, "p": goal["scorerId"], "b": "F"}
         contacts = sorted(contacts + [shot], key=lambda c: c["f"])
-    if not penalty:
+    if not penalty and not direct:
         kick = find_kick(ball, times, player_frames, shot["p"], shot["f"], shot["b"])
         contacts = [c for c in contacts if c is shot or c["f"] < kick]
         shot["f"] = kick
@@ -568,26 +580,34 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     ball, straightened = straighten_free_flight(ball, player_frames, held, goal_index)
     if penalty:  # keep the ball on the spot whatever smoothing does before the kick
         ball = pin_ball(ball, goal_index, side)
+    for k, b in dead_ball.items():  # and a dead ball where it was put
+        ball[k] = b
+    contacts = [c for c in contacts if not any(a < c["f"] < b for a, b in dead)]
+    carries = [c for c in carries if not any(c[0] <= b and a <= c[1] for a, b in dead)]
     # The shot: from the shooter's foot, one kick to where it crosses the line (ball_rules.py).
     shooter_team = players[shot["p"]]["team"] if shot["p"] in players else goal["side"]
     deflections = [c for c in late_contacts if players[c["p"]]["team"] != shooter_team]
-    ball, shot_info = fly_shot(ball, times, player_frames, shot["f"], shot["p"], shot["b"], side, penalty,
+    ball, shot_info = fly_shot(ball, times, player_frames, shot["f"], shot["p"], shot["b"], side, penalty or direct,
                                correction.get("cleared_after"), deflections)
     # After the kick only a deflection with the ball near him touches it (the
     # shot is logged twice, or by a player the ball never reaches).
     contacts = sorted([c for c in contacts if c["f"] < shot["f"] or c is shot] + shot_info["deflected"],
                       key=lambda c: c["f"])
     carries = [[a, min(b, shot["f"] - 1), p] for a, b, p in carries if a < shot["f"] - 1]
-    rule_before = violations(ball, times, contacts, player_frames, goal_index, carries)
+    held = carries + [[a, b, ""] for a, b in dead]  # the touch rule leaves dead balls alone
+    rule_before = violations(ball, times, contacts, player_frames, goal_index, held)
     # Before the shot the ball only turns, speeds up or rises at a touch (ball_rules.py).
     keepers = {pid: (1 if player_frames[goal_index][pid][0] > 0 else -1) for pid, p in players.items()
                if p["position"] == "GK" and pid in player_frames[goal_index]}
     # Checked and fixed on the clip as written (2 decimals; times to the ms).
     times_out = [round(t, 3) for t in times]
     players_out = [{pid: (round(x, 2), round(y, 2)) for pid, (x, y) in ps.items()} for ps in player_frames]
-    ball, contacts, rule_counts = enforce_touch_rule(ball, times_out, players_out, contacts, carries, shot["f"],
-                                                     keepers, moved=[shot["f"]] if shot_info["at_foot_moved"] > 0.05 else [])
-    rule_breaks = violations(ball, times_out, contacts, players_out, goal_index, carries)
+    redraw = [r["f"] for r in restarts if r["f"] < shot["f"]] + ([shot["f"]] if shot_info["at_foot_moved"] > 0.05 else [])
+    ball, contacts, rule_counts = enforce_touch_rule(ball, times_out, players_out, contacts, held, shot["f"],
+                                                     keepers, moved=redraw)
+    redraw_roll_out(ball, times, restart_info)
+    ball = [tuple(round(v, 2) for v in b) if b is not None else None for b in ball]
+    rule_breaks = violations(ball, times_out, contacts, players_out, goal_index, held)
     kinks_after = count_kinks(ball, times, player_frames, touch_frames, goal_index)
     missing_ball = sum(p is None for p in paths[ball_source])
 
@@ -628,6 +648,7 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         "ballEstimated": estimated,  # [first, last] frame ranges where the ball position is estimated
         "contacts": contacts,  # "s": 1 marks a touch added for a dribble
         "carries": carries,  # [first, last, player id]: dribbles the viewer holds at the player's feet
+        "restarts": restart_info,  # throw-ins, corners, goal kicks, free kicks: see restarts.py
         "needsReview": correction["needs_review"],
         "teams": {"home": team_meta("home"), "away": team_meta("away")},
         "players": list(players.values()),
@@ -663,6 +684,7 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         "aim_source": aim_source,
         "aim": aim,
         "toucher_near": (sum(near), len(near)),
+        "restarts": restart_info,
         "votes": len(votes or {}),
         "swapped": votes is not None,
     }

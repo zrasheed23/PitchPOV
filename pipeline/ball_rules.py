@@ -347,7 +347,8 @@ def enforce_touch_rule(ball, times, player_frames, contacts, carries, goal_index
         bad = [f for f, kind in bad if kind != "far touch"]
         stretches = []
         for a, b in zip(bounds, bounds[1:]):
-            if a in inside or b - a < 2 or out[a] is None or out[b] is None:
+            if (a in inside or b - a < 2 or out[a] is None or out[b] is None
+                    or any(ca <= a and b <= cb for ca, cb, _ in carries)):  # a carry or dead ball: left as it is
                 continue
             if any(a < f < b for f in bad) or a in dirty or b in dirty:
                 stretches.append((a, b, [f for f in bad if a < f < b]))

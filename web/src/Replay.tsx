@@ -8,7 +8,7 @@ import { colorDistance, kitColors } from './kit'
 import { distanceAt, runDistances, velocities } from './motion'
 import type { Playback } from './playback'
 import { type Kit, PlayerBody } from './Player'
-import { DIVE_LENGTH_S, PLAYER_HEIGHT, type Rig, animateDive, animateRig, animateTouch } from './rig'
+import { DIVE_LENGTH_S, PLAYER_HEIGHT, THROW_AFTER_S, type Rig, animateDive, animateRig, animateThrow, animateTouch } from './rig'
 
 const TOUCH_WINDOW_S = 0.25 // a touch is animated this long either side
 const TOUCH_PULL_S = 0.12 // the ball is shifted onto the foot/head this long either side
@@ -226,6 +226,20 @@ export function Replay({ clip, track, playback, ball, onEnded }: ReplayProps) {
     () => (clip.carries ?? []).map(([a, b, p]) => ({ t0: clip.frames[a].t, t1: clip.frames[b].t, p })),
     [clip],
   )
+  // Throw-ins: the thrower lifts the ball over his head, holds it, throws it,
+  // facing where it goes.
+  const throws = useMemo(
+    () =>
+      (clip.restarts ?? []).flatMap((r) => {
+        if (r.type !== 'T' || !r.hold) return []
+        const t = clip.frames[r.f].t
+        const at = sampleBall(track, clip.frames, t)
+        const next = sampleBall(track, clip.frames, Math.min(t + 0.3, duration))
+        const dir: [number, number] = at && next ? [next[0] - at[0], next[1] - at[1]] : [0, 0]
+        return [{ p: r.p, t, hold: t - clip.frames[r.hold[0]].t, dir }]
+      }),
+    [clip, track, duration],
+  )
   const [hovered, setHovered] = useState<string | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
   const labelled = hovered ?? selected
@@ -281,9 +295,14 @@ export function Replay({ clip, track, playback, ball, onEnded }: ReplayProps) {
       const rig = rigs.current[id]
       if (!rig) continue
       const k = dive && dive.keeperId === id ? pb.time - dive.start : -1
+      const th = throws.find((w) => w.p === id && pb.time > w.t - w.hold - 0.3 && pb.time < w.t + THROW_AFTER_S)
       if (dive && k >= 0 && k < DIVE_LENGTH_S) {
         g.rotation.y = yaw.current[id] = dive.yaw
         animateDive(rig, k, dive.side, dive.strength)
+      } else if (th) {
+        if (th.dir[0] || th.dir[1]) g.rotation.y = yaw.current[id] = Math.atan2(-th.dir[0], th.dir[1])
+        animateRig(rig, 0, 0)
+        animateThrow(rig, pb.time - th.t, th.hold)
       } else {
         animateRig(rig, (distanceAt(clip, dist[id], pb.time) / STRIDE_M) * Math.PI * 2, speed)
         if (touch && touch.p === id) {

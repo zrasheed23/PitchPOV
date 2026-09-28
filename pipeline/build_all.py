@@ -24,6 +24,7 @@ from pathlib import Path
 from cut_clip import (BALL_SOURCES, OVERRIDES, RAW, RAW_BALL_MAX_M, SHOT_PLACEMENT, build_clip, load_match,
                       load_overrides, load_shot_placement, read_windows, write_clip)
 from goals import build_index, clip_name, find_goals
+from restarts import KINDS
 
 CLIPS = Path("clips")
 EXPECTED_GOALS = 172  # 2022 World Cup goals, excluding shootouts
@@ -225,6 +226,17 @@ def report(matches, results, problems, skipped, n_games):
               f"max {moved[-1]:.1f} m; shooter moved onto the ball (tracked > 3 m from it): "
               f"{sum(1 for x in shots if x['shooter_moved'])} clips, most "
               f"{max(x['shooter_moved'] for x in shots):.1f} m; deflections kept: {sum(len(x['deflected']) for x in shots)}")
+        restarts = [(g, r) for g, s in results for r in s["restarts"]]
+        kinds = Counter(r["type"] for _, r in restarts)
+        print(f"restarts before the shot (ball still at the spot / in the thrower's hands until taken): "
+              f"{len(restarts)} in {len({clip_name(g) for g, _ in restarts})} clips ("
+              + ", ".join(f"{n} {KINDS[k]}" for k, n in sorted(kinds.items())) + "); "
+              f"ball went out in the clip: {sum(r['out'] is not None for _, r in restarts)}, "
+              f"hidden while out of play: {sum(bool(r['hidden']) for _, r in restarts)}")
+        for g, r in restarts:
+            if r["out"] is not None:
+                print(f"  {clip_name(g)}  {g['scorer']} {g['clock']}  {KINDS[r['type']]}: out at frame {r['out']}, "
+                      f"taken at frame {r['f']}")
         swapped = [(g, s) for g, s in results if s["swapped"]]
         if swapped:
             ok, n = (sum(s["toucher_near"][k] for _, s in swapped) for k in (0, 1))

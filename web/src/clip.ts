@@ -45,6 +45,9 @@ export interface Clip {
   ballCorrected: boolean // the pipeline moved the post-shot ball path so it goes in
   contacts?: { f: number; p: string; b: string; s?: 1 | 2 }[] // every touch: frame, player id, body part (R/L/F foot, H head, X hands); s = added (1 a dribble push, 2 where the ball changes course near him)
   carries?: [number, number, string][] // dribbles the pipeline couldn't rebuild: first frame, last frame, player id
+  // Throw-ins (T), corners (C), goal kicks (G), free kicks (F), kick-offs (K) before the shot: the
+  // restart frame and taker; hold = [first, last] frames a throw-in is held over his head.
+  restarts?: { type: string; f: number; p: string; out: number | null; hold: [number, number] | null; placed: [number, number]; hidden: number[] }[]
   ballEstimated?: [number, number][] // frame ranges where the tracking lost the ball and the pipeline estimated it
   needsReview: boolean // the ball never gets near the goal and was left as tracked
   teams: Record<TeamSide, Team>

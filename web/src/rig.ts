@@ -123,3 +123,25 @@ export function animateTouch(rig: Rig, k: number, w: number, part: string, side:
   rig.shoulderL.rotation.z = -0.12 - 0.5 * e
   rig.shoulderR.rotation.z = 0.12 + 0.5 * e
 }
+
+// Throw-in, k seconds from the release (negative before). `hold` is how long he
+// holds the ball above his head first. Lift it up (0.3 s), hold it, wind back
+// behind the head, then whip both arms forward and follow through (to +0.6 s).
+export const THROW_AFTER_S = 0.6
+
+export function animateThrow(rig: Rig, k: number, hold: number) {
+  const up = ease((k + hold + 0.3) / 0.3) // arms rise from the ball at his feet to over his head
+  const wind = ease((k + 0.3) / 0.25) * (1 - ease(k / 0.12)) // back behind the head just before the release
+  const through = ease(k / 0.15) * (1 - ease((k - 0.2) / 0.4)) // arms forward after it
+  const done = ease((k - 0.2) / 0.4) // back to the standing pose
+  const arm = (1 - done) * (up * 2.9 - through * 1.5) // radians forward-and-over: ~2.9 is straight up
+  rig.shoulderL.rotation.x = rig.shoulderR.rotation.x = arm
+  rig.shoulderL.rotation.z = -ARM_REST_Z * (1 - up * (1 - done))
+  rig.shoulderR.rotation.z = ARM_REST_Z * (1 - up * (1 - done))
+  rig.elbowL.rotation.x = rig.elbowR.rotation.x = (1 - done) * (up * 0.5 + wind * 0.9 - through * 0.4) + done * 0.25
+  // Lean back into the wind-up, forward through the throw; feet stay down.
+  rig.body.rotation.x = wind * 0.22 - through * 0.25
+  rig.body.position.y = 0
+  rig.hipL.rotation.x = rig.hipR.rotation.x = 0
+  rig.kneeL.rotation.x = rig.kneeR.rotation.x = -0.05 - wind * 0.15
+}
