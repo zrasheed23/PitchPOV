@@ -44,10 +44,16 @@ const SHOT_BACK_M = 7.5
 const SHOT_UP_M = 3
 const SHOT_SIDE_M = 1.6 // over the shoulder, toward the outside of the pitch
 const SHOT_AHEAD_MAX_M = 14
-const SHOT_IN_MAX_S = 1.8 // start moving in at most this long before the shot
-const SHOT_IN_MIN_S = 0.8 // and at least this long before it
+const SHOT_IN_MAX_S = 2.4 // start moving in at most this long before the shot
+const SHOT_IN_MIN_S = 1.5 // and at least this long before it
 const SHOT_HOLD_AFTER_S = 0.8 // stay after the ball crosses the line
-const SHOT_OUT_S = 1.5
+const SHOT_OUT_S = 2
+
+// Last pass over the follow path: a critically damped spring run forwards then
+// backwards (no lag), so the camera speeds up and slows down gently on shots and
+// fast passes instead of snapping to them.
+const DAMP_POS_S = 0.45
+const DAMP_AIM_S = 0.3
 
 // TV main camera: high in the near stand on the halfway line. It stays put and
 // pans (and zooms) to follow the ball, like the wide shot on a broadcast.
@@ -80,6 +86,32 @@ function blur(src: Float32Array, stride: number, steps: number, sigma: number, l
     }
   }
   return out
+}
+
+// Critically damped spring (time constant tau) over `src`, forwards then
+// backwards: continuous velocity, no net lag.
+function damp(src: Float32Array, stride: number, steps: number, tau: number): Float32Array {
+  const w = 1 / tau
+  const pass = (from: Float32Array, dir: 1 | -1) => {
+    const out = new Float32Array(from.length)
+    const start = dir > 0 ? 0 : steps - 1
+    for (let d = 0; d < stride; d++) {
+      let x = from[start * stride + d]
+      let v = 0
+      for (let n = 0, i = start; n < steps; n++, i += dir) {
+        // Exact step of x'' = w^2 (goal - x) - 2 w x' for one STEP.
+        const goal = from[i * stride + d]
+        const e = x - goal
+        const k = Math.exp(-w * STEP)
+        const c = v + w * e
+        x = goal + (e + c * STEP) * k
+        v = (v - w * c * STEP) * k
+        out[i * stride + d] = x
+      }
+    }
+    return out
+  }
+  return pass(pass(src, 1), -1)
 }
 
 // Ball on the ground plane per step, holding the last known spot where it's missing.
@@ -151,6 +183,10 @@ export function buildPlayCam(clip: Clip, track: BallTrack, side: 1 | -1): PlayCa
   }
   // Twice: smoothing the first correction softens it a little.
   keepBallInFrame(cam, clip, track)
+  keepBallInFrame(cam, clip, track)
+  cam.pos = damp(cam.pos, 3, steps, DAMP_POS_S)
+  cam.target = damp(cam.target, 3, steps, DAMP_AIM_S)
+  // The damping lets a fast ball get ahead of the aim; bring it back in.
   keepBallInFrame(cam, clip, track)
   return cam
 }

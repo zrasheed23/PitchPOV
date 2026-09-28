@@ -37,7 +37,7 @@ export default function App() {
   const [playing, setPlaying] = useState(true)
   const [ended, setEnded] = useState(false)
   const [speed, setSpeed] = useState(1)
-  const [view, setView] = useState<View>({ preset: 'broadcast', seq: 0 })
+  const [view, setView] = useState<View>({ preset: 'play', seq: 0 })
   const [pickerOpen, setPickerOpen] = useState(false)
   const [povId, setPovId] = useState<string | null>(null)
   const closePicker = useCallback(() => setPickerOpen(false), [])
@@ -63,7 +63,7 @@ export default function App() {
         playback.current.scrubbing = false
         setPlaying(true)
         setEnded(false)
-        setView((v) => ({ preset: 'broadcast', seq: v.seq + 1 }))
+        setView((v) => ({ preset: 'play', seq: v.seq + 1 }))
         setClip(c)
       })
       .catch((e: Error) => id === request.current && setError(e.message))

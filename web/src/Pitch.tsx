@@ -25,22 +25,26 @@ const NET_DEPTH = 2.2 // the pipeline rests the ball 2 m behind the line
 
 const lineMat = <meshBasicMaterial color="white" />
 
-// Net mesh drawn on a canvas: a see-through grid of white cords.
+// Net mesh drawn on a canvas: white cords over a faint white fill. The fill keeps
+// the net readable from far cameras, where the cords shrink below a pixel.
 function netTexture(): THREE.CanvasTexture {
   const c = document.createElement('canvas')
   c.width = c.height = 64
   const ctx = c.getContext('2d')!
-  ctx.strokeStyle = 'rgba(255,255,255,0.85)'
-  ctx.lineWidth = 4
+  ctx.fillStyle = 'rgba(255,255,255,0.14)'
+  ctx.fillRect(0, 0, 64, 64)
+  ctx.strokeStyle = 'rgba(255,255,255,0.95)'
+  ctx.lineWidth = 5
   ctx.strokeRect(0, 0, 64, 64)
   const tex = new THREE.CanvasTexture(c)
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping
-  tex.anisotropy = 4
+  tex.anisotropy = 8
   return tex
 }
 const NET_CELL = 0.12 // metres per mesh square
 let netTex: THREE.CanvasTexture | null = null
 
+// Blended, not alpha-tested: an alpha test drops the mipmapped (far away) net entirely.
 function NetPanel({ w, h, ...props }: { w: number; h: number } & JSX.IntrinsicElements['mesh']) {
   const tex = useMemo(() => {
     netTex ??= netTexture()
@@ -52,7 +56,23 @@ function NetPanel({ w, h, ...props }: { w: number; h: number } & JSX.IntrinsicEl
   return (
     <mesh {...props}>
       <planeGeometry args={[w, h]} />
-      <meshBasicMaterial map={tex} transparent alphaTest={0.3} side={THREE.DoubleSide} depthWrite={false} />
+      <meshBasicMaterial map={tex} transparent side={THREE.DoubleSide} depthWrite={false} />
+    </mesh>
+  )
+}
+
+// A rope along the net's edge, from a to b (three.js coordinates).
+const ROPE_R = 0.035
+function Rope({ a, b }: { a: [number, number, number]; b: [number, number, number] }) {
+  const from = new THREE.Vector3(...a)
+  const to = new THREE.Vector3(...b)
+  const len = from.distanceTo(to)
+  const mid = from.clone().add(to).multiplyScalar(0.5)
+  const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), to.sub(from).normalize())
+  return (
+    <mesh position={mid} quaternion={quat}>
+      <cylinderGeometry args={[ROPE_R, ROPE_R, len, 6]} />
+      <meshBasicMaterial color="white" />
     </mesh>
   )
 }
@@ -103,6 +123,7 @@ function Box({ side, depth, width }: { side: 1 | -1; depth: number; width: numbe
 
 function Goal({ side }: { side: 1 | -1 }) {
   const x = side * HALF_L
+  const bx = x + side * NET_DEPTH // back of the net
   const hw = GOAL_WIDTH / 2
   return (
     <group>
@@ -117,11 +138,21 @@ function Goal({ side }: { side: 1 | -1 }) {
         <meshStandardMaterial color="white" />
       </mesh>
       {/* Net: back, roof and sides */}
-      <NetPanel w={GOAL_WIDTH} h={GOAL_HEIGHT} position={[x + side * NET_DEPTH, GOAL_HEIGHT / 2, 0]} rotation-y={Math.PI / 2} />
+      <NetPanel w={GOAL_WIDTH} h={GOAL_HEIGHT} position={[bx, GOAL_HEIGHT / 2, 0]} rotation-y={Math.PI / 2} />
       <NetPanel w={NET_DEPTH} h={GOAL_WIDTH} position={[x + (side * NET_DEPTH) / 2, GOAL_HEIGHT, 0]} rotation-x={Math.PI / 2} />
       {[hw, -hw].map((z) => (
         <NetPanel key={z} w={NET_DEPTH} h={GOAL_HEIGHT} position={[x + (side * NET_DEPTH) / 2, GOAL_HEIGHT / 2, z]} />
       ))}
+      {/* Ropes on the net's edges so its shape reads from any distance */}
+      {[hw, -hw].map((z) => (
+        <group key={z}>
+          <Rope a={[x, GOAL_HEIGHT, z]} b={[bx, GOAL_HEIGHT, z]} />
+          <Rope a={[bx, GOAL_HEIGHT, z]} b={[bx, 0, z]} />
+          <Rope a={[x, ROPE_R, z]} b={[bx, ROPE_R, z]} />
+        </group>
+      ))}
+      <Rope a={[bx, GOAL_HEIGHT, hw]} b={[bx, GOAL_HEIGHT, -hw]} />
+      <Rope a={[bx, ROPE_R, hw]} b={[bx, ROPE_R, -hw]} />
     </group>
   )
 }
