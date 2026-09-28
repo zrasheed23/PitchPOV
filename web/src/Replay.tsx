@@ -3,19 +3,22 @@ import { useFrame } from '@react-three/fiber'
 import { type RefObject, useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { type BallTrack, sampleBall } from './ballTrack'
-import { type Clip, attackingSide, clipDuration, frameIndexAt, sampleClip } from './clip'
+import { type Clip, clipDuration, frameIndexAt, sampleClip } from './clip'
 import { colorDistance, kitColors } from './kit'
 import { distanceAt, runDistances, velocities } from './motion'
 import type { Playback } from './playback'
 import { type Kit, PlayerBody } from './Player'
 import {
+  BLOCK_LENGTH_S,
   DIVE_LENGTH_S,
   PLAYER_HEIGHT,
   THROW_AFTER_S,
   VOLLEY_AFTER_S,
   VOLLEY_BEFORE_S,
   type Rig,
+  animateBlock,
   animateDive,
+  animateKeeper,
   animateRig,
   animateThrow,
   animateTouch,
@@ -73,6 +76,8 @@ const LABEL_Y = PLAYER_HEIGHT + 0.75
 const STRIDE_M = 2.4 // metres per full running cycle (two steps)
 const TURN_DAMPING = 10
 const FACE_BALL_MPS = 1.2 // slower than this, a player turns to watch the ball
+const KEEPER_FACE_BALL_MPS = 4.5 // keepers watch the ball unless they're sprinting
+const KEEPER_STEP_M = 0.9 // a keeper's side-step cycle
 const GK_SHIRTS = { home: '#e8e14a', away: '#35c46a' }
 
 // Shirt, shorts and socks for each side, plus goalkeepers in their own colour.
@@ -91,53 +96,38 @@ function kits(clip: Clip): Record<string, Kit> {
   return out
 }
 
-// The tracking only has positions, so a keeper's dive is inferred from where
-// the ball goes in: if it crosses the line more than ~1 m to one side of the
-// conceding keeper, and he's near his line, he dives that way just before it
-// gets there. A ball straight at him, or a keeper far off his line, gets no dive.
+// The keeper's reaction to the shot, planned by the pipeline (keepers.plan_dive):
+// a dive toward where the ball crosses the line, or a block when it's at him.
 interface Dive {
   keeperId: string
-  start: number // clip time of take-off
-  yaw: number // facing, frozen for the dive
+  kind: 'dive' | 'block'
+  start: number // clip time he reacts
+  yaw: number // facing the ball at the kick, frozen for the dive
   side: 1 | -1 // toward the keeper's right (+1) or left (-1)
-  strength: number // 0..1
+  strength: number // 0..1 of a full-stretch dive
+  height: number // the ball's height at the line
 }
 
-const DIVE_MIN_LATERAL_M = 0.9
-const DIVE_MAX_OFF_LINE_M = 9
-const REACTION_S = 0.2
-
 function planDive(clip: Clip): Dive | null {
-  const { frames, goalFrame } = clip
-  const side = attackingSide(clip)
-  const lineX = side * 52.5
-  const keepers = clip.players.filter((p) => p.position === 'GK')
-  const atShot = frames[goalFrame].p
-  const keeper = keepers
-    .filter((p) => atShot[p.id])
-    .sort((a, b) => Math.abs(atShot[a.id][0] - lineX) - Math.abs(atShot[b.id][0] - lineX))[0]
-  if (!keeper) return null
-  const cross = frames.findIndex((f, i) => i >= goalFrame && f.b !== null && side * f.b[0] >= 52.5)
-  if (cross < 0) return null
-  const ball = frames[cross].b!
-  const k = frames[cross].p[keeper.id] ?? atShot[keeper.id]
-  const lateral = ball[1] - k[1] // pitch y
-  if (Math.abs(lateral) < DIVE_MIN_LATERAL_M || Math.abs(lineX - k[0]) > DIVE_MAX_OFF_LINE_M) return null
-
-  // Face the ball at the moment of the shot.
-  const shotBall = frames[goalFrame].b ?? ball
-  const pk = atShot[keeper.id]
-  const dx = shotBall[0] - pk[0]
-  const dz = -(shotBall[1] - pk[1])
+  const plan = clip.keeperDive
+  if (!plan) return null
+  const kick = clip.kickFrame ?? clip.goalFrame
+  const k = clip.frames[kick].p[plan.keeper]
+  const b = clip.frames[kick].b
+  if (!k || !b) return null
+  const dx = b[0] - k[0]
+  const dz = -(b[1] - k[1])
   const yaw = Math.atan2(-dx, -dz)
-  // His right in world space is (cos yaw, 0, -sin yaw); the ball's side is pitch y = three -z.
-  const toward = Math.sin(yaw) * Math.sign(lateral)
+  // His right in world space is (cos yaw, 0, -sin yaw); pitch y is three -z.
+  const toward = Math.sin(yaw) * plan.dir
   return {
-    keeperId: keeper.id,
-    start: Math.max(clip.goalT + REACTION_S, frames[cross].t - 0.4),
+    keeperId: plan.keeper,
+    kind: plan.kind,
+    start: clip.frames[plan.f].t,
     yaw,
     side: toward >= 0 ? 1 : -1,
-    strength: Math.min(Math.max((Math.abs(lateral) - DIVE_MIN_LATERAL_M) / 2.5, 0.35), 1),
+    strength: plan.stretch,
+    height: plan.height,
   }
 }
 
@@ -208,6 +198,8 @@ export function Replay({ clip, track, playback, ball, onEnded }: ReplayProps) {
   const dist = useMemo(() => runDistances(clip), [clip])
   const playerKits = useMemo(() => kits(clip), [clip])
   const dive = useMemo(() => planDive(clip), [clip])
+  const keeperIds = useMemo(() => new Set(clip.players.filter((p) => p.position === 'GK').map((p) => p.id)), [clip])
+  const kickT = clip.frames[clip.kickFrame ?? clip.goalFrame].t
   const ballTex = useMemo(() => ballTexture(), [])
   useEffect(() => () => ballTex.dispose(), [ballTex])
   const lastBall = useRef<THREE.Vector3 | null>(null)
@@ -295,7 +287,8 @@ export function Replay({ clip, track, playback, ball, onEnded }: ReplayProps) {
       const speed = Math.hypot(vx, vy)
       let dx = vx
       let dz = -vy
-      if (speed < FACE_BALL_MPS && s.ball) {
+      const isKeeper = keeperIds.has(id)
+      if ((speed < FACE_BALL_MPS || (isKeeper && speed < KEEPER_FACE_BALL_MPS)) && s.ball) {
         dx = s.ball[0] - x
         dz = -(s.ball[1] - y)
       }
@@ -312,9 +305,13 @@ export function Replay({ clip, track, playback, ball, onEnded }: ReplayProps) {
         (c) =>
           (c.v === 'scissor' || c.v === 'bicycle') && c.p === id && pb.time > c.t - VOLLEY_BEFORE_S && pb.time < c.t + VOLLEY_AFTER_S,
       )
-      if (dive && k >= 0 && k < DIVE_LENGTH_S) {
+      if (dive && dive.kind === 'dive' && k >= 0 && k < DIVE_LENGTH_S) {
         g.rotation.y = yaw.current[id] = dive.yaw
-        animateDive(rig, k, dive.side, dive.strength)
+        animateDive(rig, k, dive.side, dive.strength, dive.height)
+      } else if (dive && dive.kind === 'block' && k >= 0 && k < BLOCK_LENGTH_S) {
+        g.rotation.y = yaw.current[id] = dive.yaw
+        animateRig(rig, 0, 0)
+        animateBlock(rig, k, dive.height)
       } else if (vo) {
         // His back to where the ball goes: the kick goes up and over him.
         if (vo.dir) g.rotation.y = yaw.current[id] = Math.atan2(vo.dir[0], -vo.dir[1])
@@ -325,6 +322,10 @@ export function Replay({ clip, track, playback, ball, onEnded }: ReplayProps) {
         animateThrow(rig, pb.time - th.t, th.hold)
       } else {
         animateRig(rig, (distanceAt(clip, dist[id], pb.time) / STRIDE_M) * Math.PI * 2, speed)
+        if (isKeeper) {
+          const hop = dive && dive.keeperId === id ? pb.time - kickT : null
+          animateKeeper(rig, (distanceAt(clip, dist[id], pb.time) / KEEPER_STEP_M) * Math.PI * 2, speed, hop)
+        }
         if (touch && touch.p === id) {
           const k = pb.time - touch.t
           const e = 1 - (k / TOUCH_WINDOW_S) ** 2

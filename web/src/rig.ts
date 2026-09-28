@@ -41,7 +41,8 @@ export function animateRig(rig: Rig, phase: number, speed: number) {
   // Lean into the run and bob slightly each stride.
   rig.body.rotation.x = -0.18 * run
   rig.body.position.y = Math.abs(Math.cos(phase)) * 0.05 * run
-  // Undo anything a dive set.
+  // Undo anything a dive or a keeper's stance set.
+  rig.hipL.rotation.z = rig.hipR.rotation.z = 0
   rig.body.rotation.z = 0
   rig.body.position.x = 0
   rig.shoulderL.rotation.z = -ARM_REST_Z
@@ -57,18 +58,22 @@ export const DIVE_LENGTH_S = 2.4
 
 const ease = (x: number) => (x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3 - 2 * x))
 
-export function animateDive(rig: Rig, k: number, side: 1 | -1, strength: number) {
+// height: the ball's height where he meets it (a low ball is a low dive along
+// the grass, a high one a leap with the arms up).
+export function animateDive(rig: Rig, k: number, side: 1 | -1, strength: number, height = 0.8) {
   const load = ease(k / 0.12) * (1 - ease((k - 0.12) / 0.15))
   const fly = ease((k - 0.12) / 0.38)
   const up = 1 - ease((k - 1.6) / 0.8) // 1 while down, back to 0 once standing
   const roll = fly * up * (0.55 + 0.95 * strength) // up to ~1.5 rad: close to lying flat
-  const lift = Math.sin(Math.min(Math.max((k - 0.12) / 0.38, 0), 1) * Math.PI) * 0.35 * strength
+  rig.hipL.rotation.z = rig.hipR.rotation.z = 0
+  const high = Math.min(Math.max((height - 0.5) / 1.5, 0), 1)
+  const lift = Math.sin(Math.min(Math.max((k - 0.12) / 0.38, 0), 1) * Math.PI) * (0.12 + 0.6 * high) * Math.max(strength, 0.4)
 
   // Roll sideways about the feet; shift the body so its middle stays on the
   // tracked position instead of the feet.
   rig.body.rotation.z = -side * roll
   rig.body.rotation.x = 0
-  rig.body.position.x = -side * Math.sin(roll) * 0.2 + side * fly * up * 0.5 * strength
+  rig.body.position.x = -side * Math.sin(roll) * 0.2 + side * fly * up * (0.3 + 1.0 * strength)
   rig.body.position.y = lift + Math.sin(roll) * 0.12 - load * 0.12
 
   // Arms reach up past the head in the direction of the dive.
@@ -196,4 +201,49 @@ export function animateVolley(rig: Rig, k: number, side: 1 | -1, bicycle = false
   rig.shoulderR.rotation.z = ARM_REST_Z + 1.2 * wide
   rig.shoulderL.rotation.x = rig.shoulderR.rotation.x = 0.6 * fall * up
   rig.elbowL.rotation.x = rig.elbowR.rotation.x = 0.3
+}
+
+// A shot straight at the keeper: no dive, he gets his body behind it. k seconds
+// from his reaction. A low ball: crouch with the hands down; a high one: hands up.
+export const BLOCK_LENGTH_S = 1.2
+
+export function animateBlock(rig: Rig, k: number, height: number) {
+  const e = ease(k / 0.15) * (1 - ease((k - 0.8) / 0.4))
+  const low = height < 1.1 ? 1 : 0
+  rig.hipL.rotation.z = rig.hipR.rotation.z = 0
+  rig.body.position.y = -0.22 * e * low
+  rig.body.rotation.x = -0.25 * e * low
+  rig.hipL.rotation.x = rig.hipR.rotation.x = 0.5 * e * low
+  rig.kneeL.rotation.x = rig.kneeR.rotation.x = -1.0 * e * low - 0.05
+  rig.shoulderL.rotation.x = rig.shoulderR.rotation.x = e * (low ? 0.6 : 2.8)
+  rig.shoulderL.rotation.z = -ARM_REST_Z - 0.25 * e
+  rig.shoulderR.rotation.z = ARM_REST_Z + 0.25 * e
+  rig.elbowL.rotation.x = rig.elbowR.rotation.x = 0.3
+}
+
+// A keeper's ready stance, layered on the running pose when he's moving slowly:
+// knees bent, arms out, short side-steps instead of a stride (phase: radians
+// through his step cycle), and a small set hop just before the shot (hop: seconds
+// from the kick, or null).
+export function animateKeeper(rig: Rig, phase: number, speed: number, hop: number | null) {
+  const ready = 1 - Math.min(Math.max((speed - 2.5) / 1.5, 0), 1) // gone by 4 m/s: he's running
+  if (ready <= 0) return
+  const s = Math.sin(phase)
+  const step = Math.min(speed / 1.5, 1) * 0.18 // feet apart and together, not a stride
+  rig.hipL.rotation.x *= 1 - ready
+  rig.hipR.rotation.x *= 1 - ready
+  rig.hipL.rotation.z = -(0.08 + step * Math.max(0, s)) * ready
+  rig.hipR.rotation.z = (0.08 + step * Math.max(0, -s)) * ready
+  rig.kneeL.rotation.x = rig.kneeL.rotation.x * (1 - ready) - 0.35 * ready
+  rig.kneeR.rotation.x = rig.kneeR.rotation.x * (1 - ready) - 0.35 * ready
+  rig.body.rotation.x = rig.body.rotation.x * (1 - ready) - 0.15 * ready
+  rig.body.position.y = rig.body.position.y * (1 - ready) - 0.08 * ready
+  rig.shoulderL.rotation.x = rig.shoulderR.rotation.x = 0.5 * ready
+  rig.shoulderL.rotation.z = -ARM_REST_Z - 0.35 * ready
+  rig.shoulderR.rotation.z = ARM_REST_Z + 0.35 * ready
+  rig.elbowL.rotation.x = rig.elbowR.rotation.x = 0.5 * ready
+  if (hop !== null && hop > -0.3 && hop < 0.05) {
+    // Up and down on the balls of his feet as the shot is struck.
+    rig.body.position.y += Math.sin(((hop + 0.3) / 0.3) * Math.PI) * 0.1
+  }
 }

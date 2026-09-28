@@ -21,7 +21,7 @@ from contacts import align_contacts, find_contacts
 from dribble import rebuild_dribbles
 from estimate_gaps import estimate_gaps
 from goals import clip_name, find_goals
-from keepers import place_keepers
+from keepers import defending_keeper, ease_to_freeze_frame, place_keepers, plan_dive
 from penalty import find_keeper, pin_ball, place_players
 from restarts import apply_restarts, find_restarts, redraw_roll_out
 from touch_rule import violations
@@ -568,6 +568,12 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         kick = find_kick(ball, times, player_frames, shot["p"], shot["f"], shot["b"])
         contacts = [c for c in contacts if c is shot or c["f"] < kick]
         shot["f"] = kick
+    # The keeper at the shot: where StatsBomb's freeze frame has him (keepers.py).
+    gk_ids = [pid for pid, p in players.items() if p["position"] == "GK"]
+    defender = keeper if penalty else defending_keeper(player_frames, gk_ids, side)
+    sb_keeper = (placement or {}).get("keeper")
+    freeze_gap = (ease_to_freeze_frame(player_frames, times, defender, shot["f"], tuple(sb_keeper))
+                  if sb_keeper and defender else None)
     touch_frames = [c["f"] for c in contacts]
     kinks_before = count_kinks(ball, times, player_frames, touch_frames, goal_index)
     # Dribbles aren't logged touch by touch: rebuild them as pushes (dribble.py).
@@ -618,6 +624,7 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         raise ValueError(f"shot contact {shot} missing from {[(c['f'], c['p']) for c in contacts if c['f'] > shot['f'] - 20]}")
     technique = (placement or {}).get("technique")
     pose, pose_z, pose_angle = shot_pose(final_shot, technique, ball, times, player_frames)
+    dive = plan_dive(ball, times, player_frames, defender, shot["f"], side) if defender else None
     redraw_roll_out(ball, times, restart_info)
     ball = [tuple(round(v, 2) for v in b) if b is not None else None for b in ball]
     rule_breaks = violations(ball, times_out, contacts, players_out, goal_index, held)
@@ -662,6 +669,8 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         "contacts": contacts,  # "s": 1 marks a touch added for a dribble
         "carries": carries,  # [first, last, player id]: dribbles the viewer holds at the player's feet
         "restarts": restart_info,  # throw-ins, corners, goal kicks, free kicks: see restarts.py
+        "kickFrame": shot["f"],  # the frame the shot leaves his foot (goalFrame is PFF's shot event)
+        "keeperDive": dive,  # how the keeper reacts to the shot: see keepers.plan_dive
         "needsReview": correction["needs_review"],
         "teams": {"home": team_meta("home"), "away": team_meta("away")},
         "players": list(players.values()),
@@ -699,6 +708,8 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         "toucher_near": (sum(near), len(near)),
         "restarts": restart_info,
         "keeper_moves": {players[pid]["name"]: m for pid, m in keeper_moves.items()},
+        "freeze_gap": freeze_gap,
+        "dive": dive,
         "shot_pose": {"technique": technique, "pose": pose, "z": pose_z, "angle": pose_angle},
         "votes": len(votes or {}),
         "swapped": votes is not None,

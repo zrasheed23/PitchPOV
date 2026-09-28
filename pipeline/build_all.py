@@ -239,12 +239,18 @@ def report(matches, results, problems, skipped, n_games):
                       f"taken at frame {r['f']}")
         kmoves = sorted(((m, name, g) for g, s in results for name, m in s["keeper_moves"].items()),
                         key=lambda x: -x[0])
-        print(f"keepers kept in their area, on the ball-goal line when it's in their half: {len(kmoves)} keeper tracks, "
-              f"{sum(1 for m, _, _ in kmoves if m > 1)} moved more than 1 m, "
-              f"{sum(1 for m, _, _ in kmoves if m > 5)} more than 5 m (median largest move "
-              f"{statistics.median(m for m, _, _ in kmoves):.1f} m); biggest:")
-        for m, name, g in kmoves[:8]:
+        print(f"keepers corrected where PFF's track is implausible (out of his area, outside the posts, off the "
+              f"ball-goal line): {sum(1 for m, _, _ in kmoves if m > 0.05)} of {len(kmoves)} keeper tracks, "
+              f"{sum(1 for m, _, _ in kmoves if m > 5)} by more than 5 m; biggest:")
+        for m, name, g in kmoves[:6]:
             print(f"  {m:4.1f} m  {name}  in {clip_name(g)}  {g['scorer']} {g['clock']}")
+        gaps = sorted(((s["freeze_gap"], g) for g, s in results if s["freeze_gap"] is not None), key=lambda x: -x[0])
+        print(f"keeper eased onto StatsBomb's freeze-frame spot at the shot: {len(gaps)} clips; PFF had him "
+              f"{statistics.median(x for x, _ in gaps):.1f} m away (median), per clip:")
+        print("  " + "; ".join(f"{g['scorer'].split()[-1]} {g['clock']} {x:.1f}" for x, g in gaps))
+        dives = Counter((s["dive"] or {}).get("kind", "none") for _, s in results)
+        print("keeper at the shot: " + ", ".join(f"{k} {n}" for k, n in sorted(dives.items()))
+              + f"; dives that get to the ball: {sum(1 for _, s in results if (s['dive'] or {}).get('kind') == 'dive' and s['dive']['reached'])}")
         poses = Counter(s["shot_pose"]["pose"] or "none" for _, s in results)
         print("how the goal is struck (StatsBomb technique): " + ", ".join(f"{k} {n}" for k, n in sorted(poses.items())))
         for g, s in results:
