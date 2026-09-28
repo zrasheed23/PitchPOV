@@ -155,12 +155,13 @@ def _roll_out(ball, times, o, stop_by, last_touch=None):
     return stop, ball[stop]
 
 
-def apply_restarts(ball, times, player_frames, restarts, next_touch, last_touch=lambda f: None):
+def apply_restarts(ball, times, player_frames, restarts, next_touch, last_touch=lambda f: None, last_frame=None):
     """Draw the dead ball for every restart (in place on ball and
     player_frames) and return [{"type", "f", "p", "out", "hold", "placed",
     "hidden"}] for the clip, plus dead ranges [(first, last)] where the ball is
     out of play. next_touch(f) / last_touch(f): the frame of the first touch
-    after f / the last one before it, or None."""
+    after f / the last one before it, or None. last_frame: no restart is taken
+    after it (the shot)."""
     info, dead = [], []
     for r in restarts:
         f, pid, kind = r["f"], r["p"], r["type"]
@@ -169,7 +170,8 @@ def apply_restarts(ball, times, player_frames, restarts, next_touch, last_touch=
         spot = _spot(kind, ball_at, taker)
         # PFF can log a restart late (or early): it's taken at the last frame the
         # tracked ball is still at the spot (in reach of it for a throw-in).
-        near = [k for k in range(len(ball)) if -TAKEN_EARLY_S <= times[k] - times[f] <= TAKEN_LATE_S
+        last = len(ball) - 1 if last_frame is None else last_frame
+        near = [k for k in range(last + 1) if -TAKEN_EARLY_S <= times[k] - times[f] <= TAKEN_LATE_S
                 and ball[k] is not None and math.dist(ball[k][:2], spot) <= AT_SPOT_M]
         if near and (r["out"] is None or max(near) > r["out"]):
             f = r["f"] = max(near)

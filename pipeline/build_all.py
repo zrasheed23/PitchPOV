@@ -245,13 +245,14 @@ def report(matches, results, problems, skipped, n_games):
               f"{statistics.median(m for m, _, _ in kmoves):.1f} m); biggest:")
         for m, name, g in kmoves[:8]:
             print(f"  {m:4.1f} m  {name}  in {clip_name(g)}  {g['scorer']} {g['clock']}")
-        volleys = [(g, v) for g, s in results for v in s["volleys"]]
-        print(f"scissor/overhead kicks (foot touch with the ball at 1 m or higher, side-on or back to goal): "
-              f"{len(volleys)} in {len({clip_name(g) for g, _ in volleys})} clips, {sum(v['shot'] for _, v in volleys)} "
-              f"of them the goal")
-        for g, v in sorted(volleys, key=lambda gv: (not gv[1]["shot"], clip_name(gv[0]))):
-            print(f"  {clip_name(g)}  {g['scorer']} {g['clock']}  {'GOAL' if v['shot'] else 'touch'}: {v['name']} "
-                  f"at {v['t']:+.2f} s, ball {v['z']:.2f} m, turned {v['angle']:.0f} deg from goal")
+        poses = Counter(s["shot_pose"]["pose"] or "none" for _, s in results)
+        print("how the goal is struck (StatsBomb technique): " + ", ".join(f"{k} {n}" for k, n in sorted(poses.items())))
+        for g, s in results:
+            sp = s["shot_pose"]
+            if sp["pose"] in ("scissor", "bicycle") or sp["technique"] == "Volley":
+                ang = "?" if sp["angle"] is None else f"{sp['angle']:.0f}"
+                print(f"  {clip_name(g)}  {g['scorer']} {g['clock']}  {sp['technique']} -> {sp['pose']}: "
+                      f"ball {sp['z']:.2f} m, facing {ang} deg from the shot")
         swapped = [(g, s) for g, s in results if s["swapped"]]
         if swapped:
             ok, n = (sum(s["toucher_near"][k] for _, s in swapped) for k in (0, 1))

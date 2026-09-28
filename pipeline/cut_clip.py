@@ -25,7 +25,7 @@ from keepers import place_keepers
 from penalty import find_keeper, pin_ball, place_players
 from restarts import apply_restarts, find_restarts, redraw_roll_out
 from touch_rule import violations
-from volleys import find_volleys
+from volleys import shot_pose
 import relabel
 
 RAW = Path("data/raw")
@@ -439,8 +439,8 @@ def shot_aim(goal, placement=None, override=None):
     and where that came from: a hand-set aim in overrides.json wins, then
     StatsBomb's end location, then PFF's height third."""
     hand = (override or {}).get("aim")
-    if placement:
-        aim, source = dict(placement), "statsbomb"
+    if placement and "y" in placement:
+        aim, source = {k: placement[k] for k in ("y", "z") if k in placement}, "statsbomb"
     elif goal.get("shotHeight"):
         aim, source = {"height": goal["shotHeight"]}, "pff height"
     else:
@@ -552,7 +552,8 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     restarts = [] if penalty else find_restarts(events or [], frame_ms, goal_index, set(players))
     restart_info, dead = apply_restarts(ball, times, player_frames, restarts,
                                         lambda f: next((c["f"] for c in contacts if c["f"] > f), None),
-                                        lambda f: next((c["f"] for c in reversed(contacts) if c["f"] < f), None))
+                                        lambda f: next((c["f"] for c in reversed(contacts) if c["f"] < f), None),
+                                        goal_index)
     dead_ball = {k: ball[k] for a, b in dead for k in range(a, b + 1)}
     contacts = [c for c in contacts if not any(a < c["f"] <= b for a, b in dead)
                 and not any(c["p"] == r["p"] and abs(c["f"] - r["f"]) <= 12 for r in restarts)]
@@ -611,10 +612,12 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     redraw = [r["f"] for r in restarts if r["f"] < shot["f"]] + ([shot["f"]] if shot_info["at_foot_moved"] > 0.05 else [])
     ball, contacts, rule_counts = enforce_touch_rule(ball, times_out, players_out, contacts, held, shot["f"],
                                                      keepers, moved=redraw)
-    # Scissor and overhead kicks: high foot touches side-on or with his back to goal (volleys.py).
-    scoring = goal["side"] if not goal["ownGoal"] else ("away" if goal["side"] == "home" else "home")
-    attacks = {pid: (side if p["team"] == scoring else -side) for pid, p in players.items()}
-    volleys = find_volleys(contacts, ball, times, player_frames, attacks)
+    # How the scorer strikes it: StatsBomb's shot technique (volleys.py).
+    final_shot = next((c for c in contacts if (c["f"], c["p"]) == (shot["f"], shot["p"])), None)
+    if final_shot is None:
+        raise ValueError(f"shot contact {shot} missing from {[(c['f'], c['p']) for c in contacts if c['f'] > shot['f'] - 20]}")
+    technique = (placement or {}).get("technique")
+    pose, pose_z, pose_angle = shot_pose(final_shot, technique, ball, times, player_frames)
     redraw_roll_out(ball, times, restart_info)
     ball = [tuple(round(v, 2) for v in b) if b is not None else None for b in ball]
     rule_breaks = violations(ball, times_out, contacts, players_out, goal_index, held)
@@ -696,9 +699,7 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         "toucher_near": (sum(near), len(near)),
         "restarts": restart_info,
         "keeper_moves": {players[pid]["name"]: m for pid, m in keeper_moves.items()},
-        "volleys": [{"f": c["f"], "name": players[c["p"]]["name"], "z": z, "angle": a,
-                     "shot": (c["f"], c["p"]) == (shot["f"], shot["p"]), "t": round(times[c["f"]] - times[goal_index], 2)}
-                    for c, a, z in volleys],
+        "shot_pose": {"technique": technique, "pose": pose, "z": pose_z, "angle": pose_angle},
         "votes": len(votes or {}),
         "swapped": votes is not None,
     }

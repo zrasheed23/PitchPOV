@@ -6,7 +6,9 @@ every shot has an end_location (x, y, z) in the goal mouth. This script
 downloads it, matches each StatsBomb goal to our clips (same match, scoring
 team, clock within a few seconds; scorer name as a tie-break) and writes
 pipeline/shot_placement.json: clip name -> {"y", "z"} in our pitch coordinates
-at the goal line, which the goal-mouth correction aims the shot at.
+at the goal line, which the goal-mouth correction aims the shot at, plus the
+shot's "technique" (Normal, Half Volley, Volley, Lob, Diving Header, Overhead
+Kick) and "keeper": where the freeze frame has the goalkeeper at the shot.
 
 StatsBomb coordinates: 120 x 80 yards, every team attacking toward x = 120,
 y increasing to the attacker's right, posts at y = 36 and 44, z in yards.
@@ -52,14 +54,19 @@ def statsbomb_goals():
             if e["period"] > 4:
                 continue  # penalty shootout
             kind = e["type"]["name"]
+            keeper = technique = None
             if kind == "Shot" and e["shot"]["outcome"]["name"] == "Goal":
                 end = e["shot"].get("end_location")
+                technique = e["shot"]["technique"]["name"]
+                keeper = next((p["location"] for p in e["shot"].get("freeze_frame", [])
+                               if p["position"]["name"] == "Goalkeeper" and not p["teammate"]), None)
             elif kind == "Own Goal Against":
                 end = None
             else:
                 continue
             goals.append({"home": home, "away": away, "team": e["team"]["name"], "player": e["player"]["name"],
-                          "clock": e["minute"] * 60 + e["second"], "end": end})
+                          "clock": e["minute"] * 60 + e["second"], "end": end, "technique": technique,
+                          "keeper": keeper})
     return goals
 
 
@@ -97,6 +104,13 @@ def to_pitch(end, side):
     return y, z
 
 
+def location_to_pitch(loc, side):
+    """A StatsBomb (x, y) (yards, the shooting team attacking x = 120) -> our (x, y),
+    measured in yards from the goal it's attacking (accurate near that goal)."""
+    x = side * (52.5 - (120 - loc[0]) * YARD)
+    return x, -side * (loc[1] - 40) * YARD
+
+
 def attacking_side(clip):
     frames, gf = clip["frames"], clip["goalFrame"]
     for d in range(len(frames)):
@@ -114,8 +128,12 @@ def main():
         if not sb["end"]:
             continue  # own goals: StatsBomb has no end location
         clip = json.loads((Path("clips") / name).read_text())
-        y, z = to_pitch(sb["end"], attacking_side(clip))
+        side = attacking_side(clip)
+        y, z = to_pitch(sb["end"], side)
         out[name] = {"y": round(y, 2)} | ({"z": round(z, 2)} if z is not None else {})
+        out[name]["technique"] = sb["technique"]
+        if sb["keeper"]:
+            out[name]["keeper"] = [round(v, 2) for v in location_to_pitch(sb["keeper"], side)]
     OUT.write_text(json.dumps(out, indent=1, ensure_ascii=False) + "\n")
     print(f"{len(matched)} of {len(index)} clips matched to StatsBomb, {len(out)} with a placement -> {OUT.name}")
     missing = [g["clip"] for g in index if g["clip"] not in matched]

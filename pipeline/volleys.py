@@ -1,11 +1,14 @@
-"""Acrobatic volleys: scissor and overhead kicks.
+"""How the scorer strikes the ball, from StatsBomb's shot technique.
 
-A foot touch (or the shot) with the ball at VOLLEY_Z or higher, by a player
-side-on to the goal he attacks or with his back to it, can only be hit by
-leaving the ground: the viewer plays a scissor/overhead kick for it (jump
-~0.4 s before the touch, body horizontal at hip height, kicking leg over,
-land on his back or side, get up). Only logged touches are considered (not
-the dribble pushes or the touches the touch rule adds).
+Acrobatic goals are rare, so only the goal's shot is ever acrobatic, and only
+when StatsBomb says so:
+- Normal, Lob, Diving Header: an ordinary kick or header (no pose).
+- Half Volley: a standing half-volley pose ("half").
+- Volley: a standing volley ("volley"), or a scissor kick ("scissor") if the
+  ball is between SCISSOR_Z as it arrives and he's side-on to where he sends
+  it (SIDE_ON_DEG either side of square).
+- Overhead Kick: a bicycle kick ("bicycle"). No 2022 goal has it.
+The pose goes on the shot contact as "v". Other touches never get one.
 
 Facing: where he's running over the last FACING_S before the touch if he's
 moving, else toward where the ball comes from (players face the ball).
@@ -13,12 +16,12 @@ moving, else toward where the ball comes from (players face the ball).
 
 import math
 
-VOLLEY_Z = 1.0
-SIDE_ON_DEG = 60.0  # facing this far or more from the goal he attacks: side-on or away
+SCISSOR_Z = (0.9, 1.4)  # higher than this at a foot touch, the tracked height is off (a foot reaches ~1.2 m)
+SIDE_ON_DEG = 25.0  # facing 90 +- this many degrees from the shot's direction: side-on
 FACING_S = 0.3
 MOVING_MPS = 1.5
 ARRIVE_FRAMES = 2
-FOOT = {"R", "L", "F"}
+POSES = {"Half Volley": "half", "Volley": "volley", "Overhead Kick": "bicycle"}
 
 
 def facing(player_frames, ball, times, pid, f):
@@ -41,25 +44,26 @@ def facing(player_frames, ball, times, pid, f):
     return (dx / n, dy / n) if n > 1e-6 else None
 
 
-def find_volleys(contacts, ball, times, player_frames, attacks):
-    """Mark every logged foot touch that is an acrobatic volley with "v": 1 (in
-    place). attacks: {player id: +1/-1, the end he attacks}. Returns the marked
-    contacts as (contact, degrees he's turned from goal, ball height)."""
-    found = []
-    for c in contacts:
-        f, pid = c["f"], c["p"]
-        # The touch frame can be a frame or two late: the ball's height as it arrives.
-        z = max((ball[k][2] for k in range(max(f - ARRIVE_FRAMES, 0), f + 1) if ball[k] is not None), default=0.0)
-        if c.get("s") or c["b"] not in FOOT or z < VOLLEY_Z or pid not in attacks:
-            continue
-        face = facing(player_frames, ball, times, pid, f)
-        p = player_frames[f].get(pid)
-        if face is None or p is None:
-            continue
-        gx, gy = attacks[pid] * 52.5 - p[0], -p[1]
-        n = math.hypot(gx, gy)
-        angle = math.degrees(math.acos(max(-1.0, min(1.0, (face[0] * gx + face[1] * gy) / n)))) if n > 1e-6 else 0.0
-        if angle >= SIDE_ON_DEG:
-            c["v"] = 1
-            found.append((c, angle, z))
-    return found
+def shot_pose(shot, technique, ball, times, player_frames):
+    """Set shot["v"] from the StatsBomb technique (in place). Returns
+    (pose or None, ball height as it arrives, degrees between his facing and
+    the shot's direction or None)."""
+    f, pid = shot["f"], shot["p"]
+    pose = POSES.get(technique)
+    z = max((ball[k][2] for k in range(max(f - ARRIVE_FRAMES, 0), f + 1) if ball[k] is not None), default=0.0)
+    angle = None
+    after = next((k for k in range(f + 1, len(ball)) if times[k] - times[f] >= 0.2 and ball[k] is not None), None)
+    face = facing(player_frames, ball, times, pid, f)
+    if after is not None and face is not None and ball[f] is not None:
+        dx, dy = ball[after][0] - ball[f][0], ball[after][1] - ball[f][1]
+        n = math.hypot(dx, dy)
+        if n > 1e-6:
+            angle = math.degrees(math.acos(max(-1.0, min(1.0, (face[0] * dx + face[1] * dy) / n))))
+    if (pose == "volley" and SCISSOR_Z[0] <= z <= SCISSOR_Z[1] and angle is not None
+            and abs(angle - 90) <= SIDE_ON_DEG):
+        pose = "scissor"
+    if pose:
+        shot["v"] = pose
+    else:
+        shot.pop("v", None)
+    return pose, z, angle

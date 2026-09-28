@@ -3,31 +3,36 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "pipeline"))
 
-from volleys import find_volleys
+from volleys import shot_pose
 
 DT = 1 / 30
-TIMES = [i * DT for i in range(40)]
+TIMES = [i * DT for i in range(60)]
 
 
-def _setup(ball_z, facing_x):
-    # He stands at (40, 0) attacking +x; the ball comes in from facing_x * 5 m.
-    ball = [(40.0 + facing_x * 5 * (1 - k / 30), 0.0, ball_z) for k in range(40)]
-    players = [{"a": (40.0, 0.0)} for _ in TIMES]
-    return ball, players
+def _setup(z, shot_dir):
+    # He stands at (40, 0) facing +y (toward where the ball came from); the shot goes along shot_dir.
+    ball = [(40.0, 5.0 * (1 - k / 30), z) for k in range(31)]
+    ball += [(40.0 + shot_dir[0] * 0.8 * k, shot_dir[1] * 0.8 * k, z) for k in range(1, 30)]
+    return ball, [{"a": (40.0, 0.0)} for _ in TIMES]
 
 
-def test_a_high_ball_with_his_back_to_goal_is_an_overhead_kick():
-    ball, players = _setup(1.3, -1)  # he faces -x, away from the goal he attacks
-    contacts = [{"f": 30, "p": "a", "b": "R"}]
-    found = find_volleys(contacts, ball, TIMES, players, {"a": 1})
-    assert len(found) == 1 and contacts[0]["v"] == 1 and found[0][1] > 170
+def test_a_high_volley_side_on_is_a_scissor_kick():
+    ball, players = _setup(1.1, (1, 0))
+    shot = {"f": 30, "p": "a", "b": "R"}
+    assert shot_pose(shot, "Volley", ball, TIMES, players)[0] == "scissor" and shot["v"] == "scissor"
 
 
-def test_facing_goal_or_a_low_ball_or_a_header_is_not():
-    ball, players = _setup(1.3, 1)  # facing the goal
-    assert find_volleys([{"f": 30, "p": "a", "b": "R"}], ball, TIMES, players, {"a": 1}) == []
-    ball, players = _setup(0.6, -1)  # ball too low
-    assert find_volleys([{"f": 30, "p": "a", "b": "R"}], ball, TIMES, players, {"a": 1}) == []
-    ball, players = _setup(1.3, -1)
-    assert find_volleys([{"f": 30, "p": "a", "b": "H"}], ball, TIMES, players, {"a": 1}) == []
-    assert find_volleys([{"f": 30, "p": "a", "b": "R", "s": 2}], ball, TIMES, players, {"a": 1}) == []
+def test_a_low_or_square_volley_stays_on_the_ground():
+    ball, players = _setup(0.6, (1, 0))
+    assert shot_pose({"f": 30, "p": "a", "b": "R"}, "Volley", ball, TIMES, players)[0] == "volley"
+    ball, players = _setup(1.1, (0, -1))  # straight back where he's facing: not side-on
+    assert shot_pose({"f": 30, "p": "a", "b": "R"}, "Volley", ball, TIMES, players)[0] == "volley"
+
+
+def test_only_statsbomb_decides():
+    ball, players = _setup(1.4, (1, 0))
+    for technique, pose in (("Normal", None), ("Lob", None), ("Diving Header", None), ("Half Volley", "half"),
+                            ("Overhead Kick", "bicycle"), (None, None)):
+        shot = {"f": 30, "p": "a", "b": "R"}
+        assert shot_pose(shot, technique, ball, TIMES, players)[0] == pose
+        assert shot.get("v") == pose

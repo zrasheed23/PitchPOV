@@ -93,7 +93,9 @@ export function animateDive(rig: Rig, k: number, side: 1 | -1, strength: number)
 // A touch of the ball, `k` seconds from the moment of contact (negative before),
 // within a window of `w` seconds either side. Layered on top of the running pose.
 // part: R/L/F foot (F = either; `side` picks the leg), H head, X hands.
-export function animateTouch(rig: Rig, k: number, w: number, part: string, side: 1 | -1) {
+// style: "volley" (the ball in the air: leg swings high, leaning back a little)
+// or "half" (just after the bounce: over the ball, a short sharp swing).
+export function animateTouch(rig: Rig, k: number, w: number, part: string, side: 1 | -1, style?: string) {
   const s = Math.min(Math.max(k / w, -1), 1) // -1 .. 0 (contact) .. 1
   const e = 1 - s * s // 0 at the window edges, 1 at contact
   if (part === 'H') {
@@ -115,7 +117,10 @@ export function animateTouch(rig: Rig, k: number, w: number, part: string, side:
   const plant = side > 0 ? rig.hipL : rig.hipR
   const plantKnee = side > 0 ? rig.kneeL : rig.kneeR
   const swing = 0.3 + 1.0 * s // behind the body before contact, just ahead of it at contact, through after
-  kick.rotation.x = kick.rotation.x * (1 - e) + swing * e
+  const high = style === 'volley' ? 0.6 : style === 'half' ? -0.15 : 0 // how much higher the leg comes through
+  kick.rotation.x = kick.rotation.x * (1 - e) + (swing + high * Math.max(0, 1 + s)) * e
+  if (style === 'volley') rig.body.rotation.x += 0.18 * e // lean back to get the leg up
+  if (style === 'half') rig.body.rotation.x -= 0.15 * e // head over the ball
   kickKnee.rotation.x = kickKnee.rotation.x * (1 - e) - Math.max(0, -s) * 1.4 * e
   plant.rotation.x *= 1 - e
   plantKnee.rotation.x = plantKnee.rotation.x * (1 - e) - 0.15 * e
@@ -155,15 +160,17 @@ export function animateThrow(rig: Rig, k: number, hold: number) {
 export const VOLLEY_BEFORE_S = 0.45
 export const VOLLEY_AFTER_S = 1.8
 
-export function animateVolley(rig: Rig, k: number, side: 1 | -1) {
+export function animateVolley(rig: Rig, k: number, side: 1 | -1, bicycle = false) {
   const load = ease((k + 0.45) / 0.08) * (1 - ease((k + 0.37) / 0.08))
   const air = ease((k + 0.4) / 0.4) // leaving the ground, tipping back
   const up = 1 - ease((k - 1.0) / 0.8) // 1 until he gets up
-  const tilt = Math.min(air, up) * 1.45 // ~83 degrees back: horizontal
+  // Scissor: ~83 degrees back and rolled a little onto his side. Bicycle: flat
+  // on his back, square, the leg going straight over his head.
+  const tilt = Math.min(air, up) * (bicycle ? 1.6 : 1.45)
   const fall = ease((k - 0.05) / 0.4) // after the contact he drops onto his back
   const hips = 1.0 * (1 - fall) + 0.12 * fall
   rig.body.rotation.x = tilt
-  rig.body.rotation.z = side * 0.35 * Math.min(air, up) // side-on: rolled a little away from the kicking leg
+  rig.body.rotation.z = (bicycle ? 0 : side * 0.35) * Math.min(air, up) // scissor: rolled away from the kicking leg
   // Hips at `hips` metres: the pivot is at the feet, so lift the body by the
   // hips' drop and move it forward by half its swing back.
   rig.body.position.y = Math.max(0, (hips - 0.92 * Math.cos(tilt)) * Math.min(air, up) - load * 0.12)

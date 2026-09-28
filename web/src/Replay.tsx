@@ -308,14 +308,17 @@ export function Replay({ clip, track, playback, ball, onEnded }: ReplayProps) {
       if (!rig) continue
       const k = dive && dive.keeperId === id ? pb.time - dive.start : -1
       const th = throws.find((w) => w.p === id && pb.time > w.t - w.hold - 0.3 && pb.time < w.t + THROW_AFTER_S)
-      const vo = touches.find((c) => c.v && c.p === id && pb.time > c.t - VOLLEY_BEFORE_S && pb.time < c.t + VOLLEY_AFTER_S)
+      const vo = touches.find(
+        (c) =>
+          (c.v === 'scissor' || c.v === 'bicycle') && c.p === id && pb.time > c.t - VOLLEY_BEFORE_S && pb.time < c.t + VOLLEY_AFTER_S,
+      )
       if (dive && k >= 0 && k < DIVE_LENGTH_S) {
         g.rotation.y = yaw.current[id] = dive.yaw
         animateDive(rig, k, dive.side, dive.strength)
       } else if (vo) {
         // His back to where the ball goes: the kick goes up and over him.
         if (vo.dir) g.rotation.y = yaw.current[id] = Math.atan2(vo.dir[0], -vo.dir[1])
-        animateVolley(rig, pb.time - vo.t, vo.b === 'L' ? -1 : 1)
+        animateVolley(rig, pb.time - vo.t, vo.b === 'L' ? -1 : 1, vo.v === 'bicycle')
       } else if (th) {
         if (th.dir[0] || th.dir[1]) g.rotation.y = yaw.current[id] = Math.atan2(-th.dir[0], th.dir[1])
         animateRig(rig, 0, 0)
@@ -337,7 +340,7 @@ export function Replay({ clip, track, playback, ball, onEnded }: ReplayProps) {
             const rz = -Math.sin(g.rotation.y)
             touchSide = (s.ball[0] - x) * rx + -(s.ball[1] - y) * rz >= 0 ? 1 : -1
           }
-          animateTouch(rig, k, TOUCH_WINDOW_S, touch.b, touchSide)
+          animateTouch(rig, k, TOUCH_WINDOW_S, touch.b, touchSide, touch.v)
         }
       }
     }
