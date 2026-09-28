@@ -14,10 +14,12 @@ At the shot StatsBomb's freeze frame says where he really was: he is eased
 onto that spot over FREEZE_EASE_S before the kick, held there while he reacts
 and dives, and eased back onto his track afterwards (ease_to_freeze_frame).
 
-The dive (plan_dive) goes toward where the shot crosses the line (StatsBomb):
-after a REACTION_S reaction, late and partial if the ball gets there sooner,
-as high as the ball, stretching up to REACH_M; farther than that he dives and
-misses. A ball straight at him (within BLOCK_M) is a block or crouch, no dive.
+The dive (plan_dive) goes toward where the shot reaches him (the crossing,
+StatsBomb's, for a keeper on his line): no earlier than REACTION_S after the
+kick and WAIT_S before the ball arrives, late and partial if it gets there
+sooner, as high as the ball, stretching up to REACH_M; farther than that he
+dives and misses. A ball within BLOCK_M of him is a block or crouch at its
+height, no dive, and it beats him.
 Penalty keepers are placed by penalty.py until the kick.
 """
 
@@ -35,10 +37,12 @@ TOUCH_KEEP_S = 0.5  # leave him as tracked this long either side of his own touc
 TOUCH_TRACKED_M = 3.0  # ...if the tracking has him this close to the ball then
 FREEZE_EASE_S = 1.0
 DIVE_HOLD_S = 1.8  # held on his spot after the kick while he dives and lands
-REACTION_S = 0.2
+REACTION_S = 0.25
+WAIT_S = 0.55  # he takes off no earlier than this before the ball reaches him
+LATE_MIN = 0.15  # the least of a full stretch a late dive gets
 DIVE_FULL_S = 0.4  # take-off to full stretch
 REACH_M = 2.5
-BLOCK_M = 0.6
+BLOCK_M = 0.9
 
 
 def goals_of(player_frames, keepers):
@@ -200,9 +204,18 @@ def ease_to_freeze_frame(player_frames, times, pid, kick, spot):
 
 def plan_dive(ball, times, player_frames, pid, kick, side):
     """How the keeper reacts to the shot: {"keeper", "kind": "dive" | "block",
-    "f": take-off frame, "dir": +1/-1 along pitch y, "stretch": 0..1 of a full
-    dive, "height": the ball's height at the line, "reached": he gets to it}.
-    None if the ball never reaches his line."""
+    "f": the frame he reacts, "dir": +1/-1 along pitch y toward the ball,
+    "stretch": 0..1 of a full dive, "height": the ball's height where it
+    reaches him, "reached": he gets to it, "gap": metres from him to the ball
+    there, "arrive_f": the frame it gets there}. None if the ball never
+    reaches his line.
+
+    Where it reaches him: where the ball comes level with him (for a keeper on
+    his line, the crossing point, which is StatsBomb's). A ball within BLOCK_M
+    of him there is a block or crouch at its height, not a dive. He never
+    takes off before kick + REACTION_S, nor more than WAIT_S before the ball
+    gets there (a slow shot: he waits, then dives); a ball that arrives sooner
+    than DIVE_FULL_S after he can react gets a late, partial dive."""
     k0 = player_frames[kick].get(pid)
     if k0 is None:
         return None
@@ -210,27 +223,25 @@ def plan_dive(ball, times, player_frames, pid, kick, side):
                   and side * ball[k][0] >= HALF_L), None)
     if cross is None:
         return None
-    a, b = ball[cross - 1], ball[cross]
-    w = (HALF_L - side * a[0]) / (side * b[0] - side * a[0]) if b[0] != a[0] else 1.0
+    depth = min(side * k0[0], HALF_L)
+    arrive = next((k for k in range(kick + 1, cross + 1) if ball[k] is not None and ball[k - 1] is not None
+                   and side * ball[k][0] >= depth), cross)
+    a, b = ball[arrive - 1], ball[arrive]
+    level = depth if arrive < cross else HALF_L
+    w = (level - side * a[0]) / (side * b[0] - side * a[0]) if b[0] != a[0] else 1.0
+    w = min(max(w, 0.0), 1.0)
     y, z = a[1] + (b[1] - a[1]) * w, a[2] + (b[2] - a[2]) * w
-    t_cross = times[cross - 1] + (times[cross] - times[cross - 1]) * w
-    lateral = y - k0[1]
-    # Where he stands, off his line: the ball passes him there before the line.
-    t_at_him = t_cross
-    if cross - 1 > kick:
-        for k in range(kick + 1, cross):
-            if ball[k] is not None and side * ball[k][0] >= side * k0[0]:
-                t_at_him = times[k]
-                break
-    info = {"keeper": pid, "height": round(z, 2), "dir": 1 if lateral >= 0 else -1}
-    if abs(lateral) <= BLOCK_M:
-        f = next((k for k in range(kick, len(times)) if times[k] - times[kick] >= REACTION_S), kick)
-        return info | {"kind": "block", "f": f, "stretch": 0.0, "reached": True}
-    start = times[kick] + REACTION_S
-    time = max(t_at_him - start, 0.0)
-    # Late: he takes off as the ball arrives and only gets part of the way.
-    reach = min(abs(lateral), REACH_M) * min(time / DIVE_FULL_S, 1.0)
-    take_off = min(start, t_at_him)
-    f = next((k for k in range(kick, len(times)) if times[k] >= take_off), kick)
-    return info | {"kind": "dive", "f": f, "stretch": round(max(reach, 0.3) / REACH_M, 2),
+    t_arrive = times[arrive - 1] + (times[arrive] - times[arrive - 1]) * w
+    keeper = player_frames[arrive].get(pid, k0)
+    lateral = y - keeper[1]
+    react = times[kick] + REACTION_S
+    start = max(react, t_arrive - WAIT_S)
+    f = next((k for k in range(kick, len(times)) if times[k] >= start - 1e-9), len(times) - 1)
+    info = {"keeper": pid, "height": round(z, 2), "dir": 1 if lateral >= 0 else -1, "f": f,
+            "gap": round(abs(lateral), 2), "arrive_f": arrive}
+    if abs(lateral) < BLOCK_M:
+        return info | {"kind": "block", "stretch": 0.0, "reached": True}
+    time = max(t_arrive - start, 0.0)
+    reach = min(abs(lateral), REACH_M) * min(max(time / DIVE_FULL_S, LATE_MIN), 1.0)
+    return info | {"kind": "dive", "stretch": round(max(reach, 0.3) / REACH_M, 2),
                    "reached": abs(lateral) - reach <= 0.3}

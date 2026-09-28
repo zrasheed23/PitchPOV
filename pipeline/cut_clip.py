@@ -665,6 +665,7 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     technique = (placement or {}).get("technique")
     pose, pose_z, pose_angle = shot_pose(final_shot, technique, ball, times, player_frames)
     dive = plan_dive(ball, times, player_frames, defender, shot["f"], side) if defender else None
+    dive_start = round(times[dive["f"]] - times[shot["f"]], 2) if dive else None
     redraw_roll_out(ball, times, restart_info)
     ball = [tuple(round(v, 2) for v in b) if b is not None else None for b in ball]
     rule_breaks = violations(ball, times_out, contacts, players_out, goal_index, held)
@@ -772,7 +773,7 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         "restarts": restart_info,
         "keeper_moves": {players[pid]["name"]: m for pid, m in keeper_moves.items()},
         "freeze_gap": freeze_gap,
-        "dive": dive,
+        "dive": dict(dive, start_s=dive_start) if dive else None,
         "shot_pose": {"technique": technique, "pose": pose, "z": pose_z, "angle": pose_angle},
         "votes": len(votes or {}),
         "swapped": votes is not None,

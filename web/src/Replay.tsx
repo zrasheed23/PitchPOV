@@ -316,7 +316,7 @@ export function Replay({ clip, track, playback, ball, onEnded }: ReplayProps) {
       } else if (dive && dive.kind === 'block' && k >= 0 && k < BLOCK_LENGTH_S) {
         g.rotation.y = yaw.current[id] = dive.yaw
         animateRig(rig, 0, 0)
-        animateBlock(rig, k, dive.height)
+        animateBlock(rig, k, dive.height, dive.side)
       } else if (sc) {
         // Side-on: the ball goes off to the side of his kicking leg's swing
         // (his left for a right-footed scissor). Forward in pitch (x, y) is (-sin yaw, cos yaw).

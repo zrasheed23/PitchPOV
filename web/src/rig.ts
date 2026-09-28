@@ -202,22 +202,28 @@ export function animateBicycle(rig: Rig, k: number, side: 1 | -1) {
   rig.elbowL.rotation.x = rig.elbowR.rotation.x = 0.3
 }
 
-// A shot straight at the keeper: no dive, he gets his body behind it. k seconds
-// from his reaction. A low ball: crouch with the hands down; a high one: hands up.
+// A shot close to the keeper: no dive, he reacts toward it and it beats him.
+// k seconds from his reaction; `side` +1 toward his right; height: the ball's
+// height where it reaches him. A low ball: crouch, legs together, hands down
+// toward it; higher: hands up to its height, leaning toward it.
 export const BLOCK_LENGTH_S = 1.2
 
-export function animateBlock(rig: Rig, k: number, height: number) {
+export function animateBlock(rig: Rig, k: number, height: number, side: 1 | -1) {
   const e = ease(k / 0.15) * (1 - ease((k - 0.8) / 0.4))
-  const low = height < 1.1 ? 1 : 0
+  const low = 1 - Math.min(Math.max((height - 0.4) / 0.8, 0), 1) // 1 for a ball on the ground, 0 above ~1.2 m
   rig.hipL.rotation.z = rig.hipR.rotation.z = 0
-  rig.body.position.y = -0.22 * e * low
-  rig.body.rotation.x = -0.25 * e * low
-  rig.hipL.rotation.x = rig.hipR.rotation.x = 0.5 * e * low
-  rig.kneeL.rotation.x = rig.kneeR.rotation.x = -1.0 * e * low - 0.05
-  rig.shoulderL.rotation.x = rig.shoulderR.rotation.x = e * (low ? 0.6 : 2.8)
-  rig.shoulderL.rotation.z = -ARM_REST_Z - 0.25 * e
-  rig.shoulderR.rotation.z = ARM_REST_Z + 0.25 * e
-  rig.elbowL.rotation.x = rig.elbowR.rotation.x = 0.3
+  rig.body.position.y = -0.25 * e * low
+  rig.body.position.x = side * 0.15 * e
+  rig.body.rotation.x = -0.3 * e * low
+  rig.body.rotation.z = -side * 0.15 * e // lean toward the ball
+  rig.hipL.rotation.x = rig.hipR.rotation.x = 0.55 * e * low
+  rig.kneeL.rotation.x = rig.kneeR.rotation.x = -1.1 * e * low - 0.05
+  // Hands to the ball's height: down in front for a low ball, up to head height and over.
+  const reach = 0.4 + Math.min(Math.max(height / 2.2, 0), 1) * 2.4
+  rig.shoulderL.rotation.x = rig.shoulderR.rotation.x = e * reach
+  rig.shoulderL.rotation.z = -ARM_REST_Z - (side < 0 ? 0.5 : 0.15) * e
+  rig.shoulderR.rotation.z = ARM_REST_Z + (side > 0 ? 0.5 : 0.15) * e
+  rig.elbowL.rotation.x = rig.elbowR.rotation.x = 0.2
 }
 
 // A keeper's ready stance, layered on the running pose when he's moving slowly:

@@ -253,6 +253,9 @@ def report(matches, results, problems, skipped, n_games):
               f"{statistics.median(x for x, _ in gaps):.1f} m away (median), per clip:")
         print("  " + "; ".join(f"{g['scorer'].split()[-1]} {g['clock']} {x:.1f}" for x, g in gaps))
         dives = Counter((s["dive"] or {}).get("kind", "none") for _, s in results)
+        starts = [s["dive"]["start_s"] for _, s in results if (s["dive"] or {}).get("kind") == "dive"]
+        if starts:
+            print(f"dives take off {min(starts):.2f} s (min) / {statistics.median(starts):.2f} s (median) after the kick")
         print("keeper at the shot: " + ", ".join(f"{k} {n}" for k, n in sorted(dives.items()))
               + f"; dives that get to the ball: {sum(1 for _, s in results if (s['dive'] or {}).get('kind') == 'dive' and s['dive']['reached'])}")
         poses = Counter(s["shot_pose"]["pose"] or "none" for _, s in results)

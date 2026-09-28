@@ -65,17 +65,27 @@ def _shot(y_end, z=0.5, frames_to_line=20):
     return ball
 
 
-def test_the_dive_goes_toward_the_crossing_and_misses_out_of_reach():
+def test_the_dive_goes_toward_the_ball_and_misses_out_of_reach():
     frames = [{"gk": (51.0, 0.0)} for _ in TIMES]
     d = plan_dive(_shot(3.0), TIMES, frames, "gk", 150, 1)
     assert d["kind"] == "dive" and d["dir"] == 1 and d["reached"] is False and d["stretch"] > 0.5
-    assert d["f"] == 156  # 0.2 s reaction
+    assert d["f"] == 158  # 0.25 s reaction
     d = plan_dive(_shot(-1.5, z=2.0), TIMES, frames, "gk", 150, 1)
     assert d["dir"] == -1 and d["height"] == 2.0 and d["reached"] is True
 
 
-def test_a_fast_shot_gets_a_late_partial_dive_and_one_at_him_a_block():
+def test_a_slow_shot_waits_a_fast_one_is_late_and_one_close_to_him_is_a_block():
     frames = [{"gk": (51.0, 0.0)} for _ in TIMES]
-    slow, fast = (plan_dive(_shot(2.0, frames_to_line=n), TIMES, frames, "gk", 150, 1) for n in (30, 8))
+    slow = plan_dive(_shot(2.0, frames_to_line=60), TIMES, frames, "gk", 150, 1)  # 2 s to the line
+    assert TIMES[slow["arrive_f"]] - TIMES[slow["f"]] <= 0.55 + 1e-9 and slow["f"] > 158
+    fast = plan_dive(_shot(2.0, frames_to_line=8), TIMES, frames, "gk", 150, 1)
     assert fast["stretch"] < slow["stretch"]
-    assert plan_dive(_shot(0.3), TIMES, frames, "gk", 150, 1)["kind"] == "block"
+    assert plan_dive(_shot(0.8), TIMES, frames, "gk", 150, 1)["kind"] == "block"
+
+
+def test_a_keeper_off_his_line_reacts_to_where_the_ball_passes_him():
+    # He's 5 m out at y = 3; the shot passes him 0.4 m away, then crosses the line 2.7 m from him.
+    frames = [{"gk": (47.5, 3.0)} for _ in TIMES]
+    ball = [(40.0, 6.0, 1.0)] * 151 + [(40.0 + 0.6 * k, 6.0 - 0.272 * k, 1.0) for k in range(1, 150)]
+    d = plan_dive(ball, TIMES, frames, "gk", 150, 1)
+    assert d["kind"] == "block" and d["gap"] < 0.9

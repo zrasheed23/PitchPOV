@@ -5,7 +5,8 @@ without watching everything. Each check returns its findings; a clip with
 any is flagged and goes on the review list:
 - "touch far": at a touch the ball is more than TOUCH_M from the player.
 - "no-touch turn": the ball turns, speeds up or rises with no touch (touch_rule.py).
-- "keeper dive": the keeper takes off before the kick, or dives away from the ball.
+- "keeper dive": the keeper takes off before the kick, or dives away from
+  where the ball comes level with him.
 - "statsbomb missing": a StatsBomb on-ball action before the shot with no
   touch by that player within MATCH_S.
 - "crossing off": the shot crosses more than CROSS_M from StatsBomb's point.
@@ -76,12 +77,15 @@ def check_clip(clip, statsbomb=(), placement=None):
     if dive and dive["kind"] == "dive":
         if dive["f"] < kick:
             found["keeper dive"].append(f"takes off {dive['f'] - kick} frames before the kick")
-        if cross is not None:
-            k = players[min(cross[0], len(players) - 1)].get(dive["keeper"])
-            if k is not None:
-                gap = cross[1][1] - k[1]
-                if abs(gap) > 0.3 and (gap > 0) != (dive["dir"] > 0):
-                    found["keeper dive"].append(f"dives away from the ball ({gap:+.1f} m)")
+        # Where the ball comes level with him (the line, for a keeper on it).
+        k0 = players[kick].get(dive["keeper"])
+        if k0 is not None and cross is not None:
+            depth = min(side * k0[0], HALF_L)
+            arr = next((k for k in range(kick + 1, cross[0] + 1) if ball[k] and side * ball[k][0] >= depth), cross[0])
+            k = players[arr].get(dive["keeper"], k0)
+            gap = ball[arr][1] - k[1]
+            if abs(gap) > 0.3 and (gap > 0) != (dive["dir"] > 0):
+                found["keeper dive"].append(f"dives away from the ball ({gap:+.1f} m)")
 
     touched = [(c["f"], c["p"]) for c in clip.get("contacts", [])]
     window = MATCH_S / (times[1] - times[0]) if len(times) > 1 else 15
