@@ -11,7 +11,7 @@ def _clip():
     for k in range(60):
         x = 40.0 + 0.6 * max(k - 30, 0)  # still at his foot, then an 18 m/s shot from frame 30
         frames.append({"t": k / 30, "b": [x, 0.0, 0.1],
-                       "p": {"a": [39.7, 0.0], "gk": [51.0, 0.0], "d": [30.0, 5.0]}})
+                       "p": {"a": [39.7, 0.0], "gk": [51.0, 2.0], "d": [30.0, 5.0]}})
     return {"frames": frames, "goalFrame": 30, "kickFrame": 30,
             "players": [{"id": "a", "name": "A", "position": "CF"}, {"id": "gk", "name": "K", "position": "GK"},
                         {"id": "d", "name": "D", "position": "CB"}],

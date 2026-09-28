@@ -40,6 +40,7 @@ DIVE_HOLD_S = 1.8  # held on his spot after the kick while he dives and lands
 REACTION_S = 0.25
 WAIT_S = 0.55  # he takes off no earlier than this before the ball reaches him
 LATE_MIN = 0.15  # the least of a full stretch a late dive gets
+HANDS_CLEAR_M = 0.1
 DIVE_FULL_S = 0.4  # take-off to full stretch
 REACH_M = 2.5
 BLOCK_M = 0.9
@@ -234,6 +235,17 @@ def plan_dive(ball, times, player_frames, pid, kick, side):
     t_arrive = times[arrive - 1] + (times[arrive] - times[arrive - 1]) * w
     keeper = player_frames[arrive].get(pid, k0)
     lateral = y - keeper[1]
+    # A shot across him: what matters is how close it passes (its closest approach).
+    near = min((k for k in range(kick + 1, cross + 1) if ball[k] is not None and player_frames[k].get(pid)),
+               key=lambda k: math.hypot(ball[k][0] - player_frames[k][pid][0], ball[k][1] - player_frames[k][pid][1]),
+               default=None)
+    if near is not None:
+        q = player_frames[near][pid]
+        closest = math.hypot(ball[near][0] - q[0], ball[near][1] - q[1])
+        if closest < abs(lateral):
+            arrive, keeper, z = near, q, ball[near][2]
+            lateral = math.copysign(closest, ball[near][1] - q[1] if abs(ball[near][1] - q[1]) > 1e-6 else lateral or 1.0)
+            t_arrive = times[near]
     react = times[kick] + REACTION_S
     start = max(react, t_arrive - WAIT_S)
     f = next((k for k in range(kick, len(times)) if times[k] >= start - 1e-9), len(times) - 1)
@@ -243,5 +255,83 @@ def plan_dive(ball, times, player_frames, pid, kick, side):
         return info | {"kind": "block", "stretch": 0.0, "reached": True}
     time = max(t_arrive - start, 0.0)
     reach = min(abs(lateral), REACH_M) * min(max(time / DIVE_FULL_S, LATE_MIN), 1.0)
-    return info | {"kind": "dive", "stretch": round(max(reach, 0.3) / REACH_M, 2),
-                   "reached": abs(lateral) - reach <= 0.3}
+    # It's a goal: his fingertips end HANDS_CLEAR_M short of it, never through it.
+    reach = min(reach, abs(lateral) - HANDS_CLEAR_M)
+    return info | {"kind": "dive", "stretch": round(max(reach, 0.3) / REACH_M, 2), "reached": False,
+                   "short": round(abs(lateral) - reach, 2)}
+
+
+BODY_R = ((0.9, 0.18), (1.5, 0.22), (1.85, 0.12))  # legs, torso, head (as accuracy.py)
+BALL_R = 0.11
+CLEAR_M = 0.1  # the ball clears him by this much
+LEGS_Z, LEGS_GAP = 0.35, 0.12  # a ball this low and this central goes through his legs
+FREEZE_SLACK_M = 1.0  # he may stand at most this far from StatsBomb's spot to let it past
+
+
+def beat_keeper(dive, player_frames, times, kick, freeze_spot=None, ball_at=None):
+    """A block the ball can't clear: through his legs if it's low and central,
+    else he stands just far enough to the side (at most FREEZE_SLACK_M from
+    StatsBomb's spot, or from where he was) for it to clear him by CLEAR_M,
+    from the kick until it's past. In place; returns the plan with "through"
+    ("legs", "side", "over") and "shifted" (m)."""
+    if not dive or dive["kind"] != "block":
+        return dive
+    z, gap = dive["height"], dive["gap"]
+    r = next((r for top, r in BODY_R if z <= top), None)
+    if r is None:
+        return dive | {"through": "over"}
+    if z <= LEGS_Z and gap <= LEGS_GAP:
+        return dive | {"through": "legs"}
+    pid = dive["keeper"]
+    here = player_frames[kick][pid]
+    base = freeze_spot or here
+    end = min(dive["arrive_f"] + int(round(0.6 / max(times[1] - times[0], 1e-6))), len(times) - 1)
+
+    def closest():
+        """(clearance, distance, closest ball point (x, y), his position) while the ball goes past."""
+        best = None
+        for k in range(kick, min(end, len(ball_at) - 1)):
+            p0, p1, q = ball_at[k], ball_at[k + 1], player_frames[k][pid]
+            if p0 is None or p1 is None:
+                continue
+            vx, vy = p1[0] - p0[0], p1[1] - p0[1]
+            L = vx * vx + vy * vy
+            t = 0.0 if L < 1e-9 else min(max(((q[0] - p0[0]) * vx + (q[1] - p0[1]) * vy) / L, 0.0), 1.0)
+            cx, cy, cz = p0[0] + vx * t, p0[1] + vy * t, p0[2] + (p1[2] - p0[2]) * t
+            r = next((r for top, r in BODY_R if cz <= top), None)
+            if r is not None:
+                d = math.hypot(q[0] - cx, q[1] - cy)
+                if best is None or d - r < best[0]:
+                    best = (d - r - BALL_R, d, (cx, cy), q)
+        return best
+
+    total = 0.0
+    for _ in range(4):
+        best = closest()
+        if best is None or best[0] >= CLEAR_M - 0.005:
+            break
+        clearance, _, (cx, cy), q = best
+        room = FREEZE_SLACK_M - math.dist(player_frames[kick][pid], base)
+        shift = min(CLEAR_M - clearance, max(room, 0.0))
+        if shift <= 0.005:
+            break
+        ux, uy = q[0] - cx, q[1] - cy
+        n = math.hypot(ux, uy)
+        ux, uy = (ux / n, uy / n) if n > 1e-6 else (0.0, -dive["dir"])
+        for k, frame in enumerate(player_frames):
+            if pid not in frame:
+                continue
+            if kick <= k <= end:
+                w = 1.0
+            elif k < kick:
+                w = max(0.0, 1 - (times[kick] - times[k]) / 0.3)
+            else:
+                w = max(0.0, 1 - (times[k] - times[end]) / 0.5)
+            if w > 0:
+                x, y = frame[pid]
+                e = w * w * (3 - 2 * w)
+                frame[pid] = (x + ux * shift * e, y + uy * shift * e)
+        total += shift
+    best = closest()
+    gap = best[1] if best else gap
+    return dive | {"through": "side", "shifted": round(total, 2), "gap": round(gap, 2)}

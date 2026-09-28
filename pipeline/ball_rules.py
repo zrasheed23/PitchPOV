@@ -338,6 +338,64 @@ def meet_touches(ball, times, player_frames, contacts, end, skip=(), players=Non
     return moved, too_far, swaps
 
 
+BODY_R = ((0.9, 0.18), (1.5, 0.22), (1.85, 0.12))  # legs, torso, head (as accuracy.py)
+BALL_R = 0.11
+BODY_CLEAR_M = 0.1
+NUDGE_EASE_S = 0.3
+
+
+def clear_bodies(ball, times, player_frames, contacts, held, end, skip=None, rounds=3):
+    """The ball never goes through a player it doesn't touch: a player it
+    passes through (up to frame `end`) is nudged sideways, away from it, just
+    enough to clear it by BODY_CLEAR_M, easing in and out over NUDGE_EASE_S.
+    Touches (within 4 frames) and dead balls are left alone; skip: {player id:
+    first frame not to nudge him from} (the keeper from the shot on). In place;
+    returns nudges (m)."""
+    skip = skip or {}
+    touch_at = {}
+    for c in contacts:
+        touch_at.setdefault(c["p"], []).append(c["f"])
+    dead = set()
+    for a, b, _ in held:
+        dead.update(range(a, b + 1))
+    nudges = []
+    for _ in range(rounds):
+        hits = {}
+        for k in range(min(end, len(ball))):
+            b = ball[k]
+            if b is None or k in dead:
+                continue
+            r = next((r for top, r in BODY_R if b[2] <= top), None)
+            if r is None:
+                continue
+            for pid, xy in player_frames[k].items():
+                if k >= skip.get(pid, len(ball)) or any(abs(k - f) <= 4 for f in touch_at.get(pid, ())):
+                    continue
+                d = math.hypot(b[0] - xy[0], b[1] - xy[1])
+                need = r + BALL_R + BODY_CLEAR_M - d
+                if need > 0 and need > hits.get(pid, (0, 0, None))[0]:
+                    hits[pid] = (need, k, (xy[0] - b[0], xy[1] - b[1]))
+        if not hits:
+            break
+        for pid, (need, k, (dx, dy)) in hits.items():
+            n = math.hypot(dx, dy)
+            if n < 1e-6:  # dead centre: step aside across the ball's path
+                j = min(k + 1, len(ball) - 1)
+                vx, vy = (ball[j][0] - ball[k][0], ball[j][1] - ball[k][1]) if ball[j] else (1.0, 0.0)
+                dx, dy, n = -vy, vx, math.hypot(vx, vy) or 1.0
+            ox, oy = dx / n * need, dy / n * need
+            for m, frame in enumerate(player_frames):
+                if pid not in frame:
+                    continue
+                u = 1 - abs(times[m] - times[k]) / NUDGE_EASE_S
+                if u > 0:
+                    w = u * u * (3 - 2 * u) if abs(m - k) > 1 else 1.0
+                    x, y = frame[pid]
+                    frame[pid] = (x + ox * w, y + oy * w)
+            nudges.append((pid, k, round(need, 2)))
+    return nudges
+
+
 PLAYER_TOP_MPS = 9.5  # no player runs faster (the report flags 10.5 over 0.2 s)
 
 

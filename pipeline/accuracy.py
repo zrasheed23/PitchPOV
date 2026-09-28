@@ -15,6 +15,10 @@ any is flagged and goes on the review list:
   posts (by more than POST_MARGIN_M) while the ball is in that box.
 - "shot spot": the ball at the kick more than SHOT_SPOT_M from where
   StatsBomb has the shot taken.
+- "body pass": the ball goes through a player with no touch by him then
+  (players are legs, torso and head: body_radius), up to the goal line; the
+  keeper at the shot by his planned reaction (a block the ball can't clear,
+  or a dive whose hands get to it).
 """
 
 import math
@@ -22,7 +26,7 @@ import math
 from touch_rule import violations
 
 CHECKS = ("touch far", "no-touch turn", "keeper dive", "statsbomb missing", "crossing off", "sprint", "keeper wide",
-          "shot spot")
+          "shot spot", "body pass")
 TOUCH_M = 1.2
 MATCH_S = 0.5
 CROSS_M = 0.5
@@ -31,6 +35,17 @@ SPRINT_WINDOW = 6  # frames (0.2 s): single-frame speeds are tracking noise
 HALF_L, POST_Y, AREA_X, AREA_Y = 52.5, 3.66, 52.5 - 16.5, 20.16
 POST_MARGIN_M = 0.3
 SHOT_SPOT_M = 2.0
+
+
+BALL_R = 0.11
+# A player's body by height (m): legs, torso (and arms at his sides), head.
+BODY = ((0.9, 0.18), (1.5, 0.22), (1.85, 0.12))
+TOUCH_NEAR_FRAMES = 4
+
+
+def body_radius(z):
+    """His body's radius at height z (None above his head)."""
+    return next((r for top, r in BODY if z <= top), None)
 
 
 def _side(clip):
@@ -111,6 +126,41 @@ def check_clip(clip, statsbomb=(), placement=None):
         d = math.dist(fr[kick]["b"][:2], shot["xy"])
         if d > SHOT_SPOT_M:
             found["shot spot"].append(f"kicked {d:.1f} m from StatsBomb's shot location")
+
+    # The ball through a body, up to the goal line.
+    touch_at = {}
+    for c in clip.get("contacts", []):
+        touch_at.setdefault(c["p"], []).append(c["f"])
+    dead = set()
+    for a, b_, _ in held:
+        dead.update(range(a, b_ + 1))
+    keeper = (dive or {}).get("keeper")
+    end = cross[0] if cross is not None else len(fr)
+    passes = {}
+    for k in range(min(end, len(fr))):
+        b = ball[k]
+        if b is None or k in dead:
+            continue
+        r = body_radius(b[2])
+        if r is None:
+            continue
+        for pid, xy in players[k].items():
+            if pid == keeper and k >= kick and not (dive["kind"] == "block" and dive.get("through") != "legs"):
+                continue  # a dive (or a ball through his legs) is judged by his planned reaction below
+            if any(abs(k - f) <= TOUCH_NEAR_FRAMES for f in touch_at.get(pid, ())):
+                continue
+            if math.hypot(b[0] - xy[0], b[1] - xy[1]) < r + BALL_R - 0.03:
+                passes.setdefault(pid, []).append(k)
+    for pid, ks in passes.items():
+        runs = sum(1 for n, k in enumerate(ks) if n == 0 or k - ks[n - 1] > 3)
+        found["body pass"].append(f"{names.get(pid, pid)} {runs}x from frame {ks[0]}")
+    if dive:
+        r = body_radius(dive["height"])
+        if dive["kind"] == "block" and dive.get("through") != "legs" and r is not None \
+                and dive["gap"] < r + BALL_R + 0.05:
+            found["body pass"].append(f"through the keeper ({dive['gap']:.2f} m from him at {dive['height']:.1f} m)")
+        if dive["kind"] == "dive" and dive.get("reached"):
+            found["body pass"].append("through the keeper's hands")
 
     for pid in names:
         worst = 0.0

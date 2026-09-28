@@ -49,7 +49,7 @@ export interface Clip {
   // restart frame and taker; hold = [first, last] frames a throw-in is held over his head.
   kickFrame?: number // the frame the shot leaves the scorer (goalFrame is PFF's shot event)
   // The keeper's reaction to the shot: a dive toward where it reaches him (dir along pitch y), or a block.
-  keeperDive?: { keeper: string; kind: 'dive' | 'block'; f: number; dir: 1 | -1; stretch: number; height: number; reached: boolean; gap: number; arrive_f: number } | null
+  keeperDive?: { keeper: string; kind: 'dive' | 'block'; f: number; dir: 1 | -1; stretch: number; height: number; reached: boolean; gap: number; arrive_f: number; through?: string; short?: number } | null
   restarts?: { type: string; f: number; p: string; out: number | null; hold: [number, number] | null; placed: [number, number]; hidden: number[] }[]
   ballEstimated?: [number, number][] // frame ranges where the tracking lost the ball and the pipeline estimated it
   needsReview: boolean // the ball never gets near the goal and was left as tracked

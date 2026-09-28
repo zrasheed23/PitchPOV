@@ -204,26 +204,35 @@ export function animateBicycle(rig: Rig, k: number, side: 1 | -1) {
 
 // A shot close to the keeper: no dive, he reacts toward it and it beats him.
 // k seconds from his reaction; `side` +1 toward his right; height: the ball's
-// height where it reaches him. A low ball: crouch, legs together, hands down
-// toward it; higher: hands up to its height, leaning toward it.
-export const BLOCK_LENGTH_S = 1.2
+// height where it reaches him, `arrive` seconds after his reaction; through:
+// "legs" (a low ball between his feet), "side" (past his hand) or "over".
+// He shifts his weight toward it and reaches for it (hands down in front for a
+// low ball, up to its height for a higher one, legs apart for one through his
+// legs), then recoils as it goes past: rocks back and down, and recovers.
+export const BLOCK_LENGTH_S = 1.6
 
-export function animateBlock(rig: Rig, k: number, height: number, side: 1 | -1) {
-  const e = ease(k / 0.15) * (1 - ease((k - 0.8) / 0.4))
-  const low = 1 - Math.min(Math.max((height - 0.4) / 0.8, 0), 1) // 1 for a ball on the ground, 0 above ~1.2 m
-  rig.hipL.rotation.z = rig.hipR.rotation.z = 0
-  rig.body.position.y = -0.25 * e * low
-  rig.body.position.x = side * 0.15 * e
-  rig.body.rotation.x = -0.3 * e * low
-  rig.body.rotation.z = -side * 0.15 * e // lean toward the ball
-  rig.hipL.rotation.x = rig.hipR.rotation.x = 0.55 * e * low
-  rig.kneeL.rotation.x = rig.kneeR.rotation.x = -1.1 * e * low - 0.05
-  // Hands to the ball's height: down in front for a low ball, up to head height and over.
-  const reach = 0.4 + Math.min(Math.max(height / 2.2, 0), 1) * 2.4
-  rig.shoulderL.rotation.x = rig.shoulderR.rotation.x = e * reach
-  rig.shoulderL.rotation.z = -ARM_REST_Z - (side < 0 ? 0.5 : 0.15) * e
-  rig.shoulderR.rotation.z = ARM_REST_Z + (side > 0 ? 0.5 : 0.15) * e
-  rig.elbowL.rotation.x = rig.elbowR.rotation.x = 0.2
+export function animateBlock(rig: Rig, k: number, height: number, side: 1 | -1, arrive = 0.3, through = 'side') {
+  const e = ease(k / 0.15) * (1 - ease((k - arrive - 0.9) / 0.5)) // in, hold, out
+  const reach = ease(k / Math.max(arrive, 0.12)) // arms get there as the ball does
+  const after = ease((k - arrive) / 0.35) * (1 - ease((k - arrive - 0.6) / 0.6)) // the recoil
+  const low = 1 - Math.min(Math.max((height - 0.4) / 0.8, 0), 1)
+  const legs = through === 'legs' ? 1 : 0
+  // Weight toward the ball, lower for a low ball; after it's past, rock back and drop.
+  rig.body.position.x = side * 0.18 * e * (1 - legs)
+  rig.body.position.y = (-0.22 * low - 0.12 * after) * e
+  rig.body.rotation.x = (-0.3 * low * (1 - after) + 0.35 * after) * e
+  rig.body.rotation.z = -side * (0.18 * reach * (1 - legs) + 0.1 * after) * e
+  // Legs: bent; apart for a ball between them.
+  rig.hipL.rotation.x = rig.hipR.rotation.x = 0.5 * low * e
+  rig.hipL.rotation.z = -(0.05 + 0.3 * legs) * e
+  rig.hipR.rotation.z = (0.05 + 0.3 * legs) * e
+  rig.kneeL.rotation.x = rig.kneeR.rotation.x = -(0.9 * low + 0.2) * e - 0.05
+  // Arms: toward the ball's height, the one on its side reaching out more.
+  const up = 0.4 + Math.min(Math.max(height / 2.2, 0), 1) * 2.3
+  rig.shoulderL.rotation.x = rig.shoulderR.rotation.x = up * reach * e * (1 - 0.4 * after)
+  rig.shoulderL.rotation.z = -ARM_REST_Z - (side < 0 ? 0.7 : 0.15) * reach * e
+  rig.shoulderR.rotation.z = ARM_REST_Z + (side > 0 ? 0.7 : 0.15) * reach * e
+  rig.elbowL.rotation.x = rig.elbowR.rotation.x = 0.15 + 0.3 * after
 }
 
 // A keeper's ready stance, layered on the running pose when he's moving slowly:

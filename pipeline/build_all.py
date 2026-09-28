@@ -314,6 +314,15 @@ def report(matches, results, problems, skipped, n_games):
               f"{sum(len(s['swaps']) for _, s in swapped_ids)} in {len(swapped_ids)} clips; longest:")
         top(swapped_ids, lambda s: max(b - a for _, _, a, b in s["swaps"]),
             lambda s: "; ".join(f"{x} <-> {y} frames {a}-{b}" for x, y, a, b in s["swaps"][:2]))
+        nudged = [(g, s) for g, s in results if s["nudges"]]
+        print(f"players nudged so the ball doesn't pass through them: {sum(len(s['nudges']) for _, s in nudged)} in "
+              f"{len(nudged)} clips; most:")
+        top(nudged, lambda s: max(m for _, _, m in s["nudges"]),
+            lambda s: f"{max(m for _, _, m in s['nudges']):.2f} m")
+        beaten = [(g, s) for g, s in results if (s["dive"] or {}).get("shifted")]
+        print(f"keeper stands aside so a close shot beats him (at most 1 m from StatsBomb's spot): {len(beaten)} clips; "
+              f"through the legs: {sum(1 for _, s in results if (s['dive'] or {}).get('through') == 'legs')}; most:")
+        top(beaten, lambda s: s["dive"]["shifted"], lambda s: f"{s['dive']['shifted']:.2f} m")
         sped = [(g, s) for g, s in results if s["sped"]]
         print(f"players held to a 9.5 m/s sprint: {sum(len(s['sped']) for _, s in sped)} tracks in {len(sped)} clips; most:")
         top(sped, lambda s: max(s["sped"].values()),

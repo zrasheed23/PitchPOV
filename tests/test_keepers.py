@@ -71,7 +71,7 @@ def test_the_dive_goes_toward_the_ball_and_misses_out_of_reach():
     assert d["kind"] == "dive" and d["dir"] == 1 and d["reached"] is False and d["stretch"] > 0.5
     assert d["f"] == 158  # 0.25 s reaction
     d = plan_dive(_shot(-1.5, z=2.0), TIMES, frames, "gk", 150, 1)
-    assert d["dir"] == -1 and d["height"] == 2.0 and d["reached"] is True
+    assert d["dir"] == -1 and d["height"] == 2.0 and d["reached"] is False and d["short"] >= 0.1  # past his fingertips
 
 
 def test_a_slow_shot_waits_a_fast_one_is_late_and_one_close_to_him_is_a_block():
@@ -89,3 +89,15 @@ def test_a_keeper_off_his_line_reacts_to_where_the_ball_passes_him():
     ball = [(40.0, 6.0, 1.0)] * 151 + [(40.0 + 0.6 * k, 6.0 - 0.272 * k, 1.0) for k in range(1, 150)]
     d = plan_dive(ball, TIMES, frames, "gk", 150, 1)
     assert d["kind"] == "block" and d["gap"] < 0.9
+
+
+def test_a_close_shot_beats_the_keeper_it_does_not_go_through_him():
+    from keepers import beat_keeper
+    frames = [{"gk": (50.0, 0.0)} for _ in TIMES]
+    ball = [(40.0, 0.1, 1.2)] * 151 + [(40.0 + 0.5 * k, 0.1, 1.2) for k in range(1, 150)]  # at his chest
+    d = beat_keeper(plan_dive(ball, TIMES, frames, "gk", 150, 1), frames, TIMES, 150, (50.0, 0.0), ball)
+    assert d["kind"] == "block" and d["through"] == "side" and d["gap"] >= 0.22 + 0.11 + 0.1 - 1e-6
+    assert math.dist(frames[160]["gk"], (50.0, 0.0)) <= 1.0  # within a metre of StatsBomb's spot
+    low = [(40.0, 0.05, 0.11)] * 151 + [(40.0 + 0.5 * k, 0.05, 0.11) for k in range(1, 150)]
+    frames = [{"gk": (50.0, 0.0)} for _ in TIMES]
+    assert beat_keeper(plan_dive(low, TIMES, frames, "gk", 150, 1), frames, TIMES, 150, None, low)["through"] == "legs"

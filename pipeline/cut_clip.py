@@ -18,13 +18,13 @@ from goal_mouth import correct_goal_mouth, goal_side
 from accuracy import check_clip
 from ball_flight import anchor_frames, count_kinks, straighten_free_flight
 from ball_physics import apply_physics
-from ball_rules import FOOT_M, MEET_MAX_M, ease_player_to, enforce_touch_rule, find_kick, fly_shot, limit_player_speeds, meet_touches, shot_contact
+from ball_rules import FOOT_M, MEET_MAX_M, clear_bodies, ease_player_to, enforce_touch_rule, find_kick, fly_shot, limit_player_speeds, meet_touches, shot_contact
 from contacts import align_contacts, find_contacts
 from dribble import rebuild_dribbles
 from estimate_gaps import estimate_gaps
 from goals import clip_name, find_goals
 from identity import try_swap
-from keepers import defending_keeper, ease_to_freeze_frame, place_keepers, plan_dive
+from keepers import beat_keeper, defending_keeper, ease_to_freeze_frame, place_keepers, plan_dive
 from net import across_the_line
 from penalty import find_keeper, pin_ball, place_players
 from restarts import apply_restarts, find_restarts, redraw_roll_out
@@ -705,6 +705,8 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     technique = (placement or {}).get("technique")
     pose, pose_z, pose_angle = shot_pose(final_shot, technique, ball, times, player_frames)
     dive = plan_dive(ball, times, player_frames, defender, shot["f"], side) if defender else None
+    # It's a goal: the ball beats the keeper, it doesn't go through him (keepers.beat_keeper).
+    dive = beat_keeper(dive, player_frames, times, shot["f"], tuple(sb_keeper) if sb_keeper else None, ball)
     dive_start = round(times[dive["f"]] - times[shot["f"]], 2) if dive else None
     redraw_roll_out(ball, times, restart_info)
     ball = [tuple(round(v, 2) for v in b) if b is not None else None for b in ball]
@@ -719,7 +721,15 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         fixed.setdefault(c["p"], set()).add(c["f"])
     if defender:
         fixed.setdefault(defender, set()).update(range(shot["f"], len(frames)))  # the keeper's spot and dive
+    # Nor through anyone else: nudge whoever it would pass through (ball_rules.clear_bodies),
+    # then hold everyone to a sprint, then settle any nudge the speed cap undid.
+    crossing = next((k for k in range(shot["f"] + 1, len(ball)) if ball[k] is not None
+                     and side * ball[k][0] >= 52.5), len(ball))
+    nudges = clear_bodies(ball, times, player_frames, contacts, held, crossing,
+                          skip={defender: shot["f"]} if defender else None)
     sped = limit_player_speeds(player_frames, times, fixed)
+    nudges += clear_bodies(ball, times, player_frames, contacts, held, crossing,
+                           skip={defender: shot["f"]} if defender else None, rounds=3)
 
     out_frames = []
     for t, b, ps in zip(times, ball, player_frames):
@@ -801,6 +811,7 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         "sped": {players[pid]["name"]: round(m, 2) for pid, m in sped.items()},
         "kick_shift": round(times[shot["f"]] - times[event_index], 2),
         "shot_move": round(shot_move, 2),
+        "nudges": nudges,
         "swaps": [(players[c["p"]]["name"], players[o]["name"], a, b) for c, (o, a, b) in swaps]
                  + ([(players[goal["scorerId"]]["name"], players[shot_swap[0]]["name"], shot_swap[1], shot_swap[2])]
                     if shot_swap else []),
