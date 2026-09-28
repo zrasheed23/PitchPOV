@@ -1,0 +1,11 @@
+{
+  "_about": "Outcomes Zayd has confirmed by watching the clip. Keyed by clip file name; add entries as clips are checked. test_confirmed_by_eye.py checks every build against them.",
+  "poses": {
+    "10517_6738451.json": {"pose": "scissor", "who": "Kylian Mbappé 80:58, final"},
+    "3827_6531348.json": {"pose": "scissor", "who": "Richarlison 72:54 v Serbia"},
+    "10507_6643326.json": {"pose": "half", "who": "Seung-ho Paik 75:48 v Brazil (half volley)"}
+  },
+  "pose_counts": {
+    "bicycle": 0
+  }
+}

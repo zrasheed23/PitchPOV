@@ -36,3 +36,15 @@ def test_only_statsbomb_decides():
         shot = {"f": 30, "p": "a", "b": "R"}
         assert shot_pose(shot, technique, ball, TIMES, players)[0] == pose
         assert shot.get("v") == pose
+
+
+def test_moving_the_contact_a_couple_of_frames_does_not_flip_the_pose():
+    # A side-on volley met at 1.2 m, the ball dropping ~0.13 m a frame as it
+    # arrives (1.47 m two frames before): the contact frame's height decides,
+    # by majority over +-2 frames, for kick frames from one early to two late.
+    ball = [(40.0, 5.0 * (1 - k / 30), 1.2 + 0.135 * (30 - k)) for k in range(31)]
+    ball += [(40.0 + 0.8 * k, 0.0, 1.2) for k in range(1, 30)]
+    players = [{"a": (40.0, 0.0)} for _ in TIMES]
+    for f in (29, 30, 31, 32):
+        shot = {"f": f, "p": "a", "b": "R"}
+        assert shot_pose(shot, "Volley", ball, TIMES, players)[0] == "scissor", f

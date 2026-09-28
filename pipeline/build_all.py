@@ -15,6 +15,7 @@ The report lists clips with no placement.
 """
 
 import argparse
+import json
 import os
 import statistics
 from collections import Counter
@@ -84,6 +85,30 @@ def process_game(game_id, overrides, placements):
     return meta, goals, results, problems, skipped
 
 
+def clip_pose(clip):
+    """How a built clip's goal is struck: its shotPose, or (older clips) the
+    "v" on the scorer's touch at the kick; "none" if there's none."""
+    if "shotPose" in clip:
+        return clip["shotPose"]
+    kick = clip.get("kickFrame", clip["goalFrame"])
+    shot = next((c for c in clip.get("contacts", []) if c["f"] == kick and c["p"] == clip["scorerId"]), {})
+    v = shot.get("v")
+    return v if isinstance(v, str) else "none"
+
+
+def previous_poses(folder=CLIPS):
+    """{clip file name: pose} from the clips already on disk (the last build)."""
+    out = {}
+    for path in folder.glob("*.json"):
+        if path.name == "index.json":
+            continue
+        try:
+            out[path.name] = clip_pose(json.loads(path.read_text()))
+        except (ValueError, KeyError):
+            continue
+    return out
+
+
 def review_reasons(stats):
     """Why a clip needs a look by eye (empty if it doesn't).
 
@@ -112,7 +137,8 @@ def review_reasons(stats):
     return reasons
 
 
-def report(matches, results, problems, skipped, n_games):
+def report(matches, results, problems, skipped, n_games, last_poses=None):
+    last_poses = last_poses or {}
     goals = [g for _, gs in matches for g in gs]
     stats = [s for _, s in results]
     print("\n=== Validation report ===")
@@ -258,6 +284,12 @@ def report(matches, results, problems, skipped, n_games):
             print(f"dives take off {min(starts):.2f} s (min) / {statistics.median(starts):.2f} s (median) after the kick")
         print("keeper at the shot: " + ", ".join(f"{k} {n}" for k, n in sorted(dives.items()))
               + f"; dives that get to the ball: {sum(1 for _, s in results if (s['dive'] or {}).get('kind') == 'dive' and s['dive']['reached'])}")
+        changed = [(g, last_poses.get(clip_name(g)), s["shot_pose"]["pose"] or "none") for g, s in results
+                   if clip_name(g) in last_poses and last_poses[clip_name(g)] != (s["shot_pose"]["pose"] or "none")]
+        print(f"pose changes since the last build ({len(last_poses)} clips on disk before): {len(changed)}"
+              + ("  <- check these by eye" if changed else ""))
+        for g, old_pose, new_pose in changed:
+            print(f"  {clip_name(g)}  {g['scorer']} {g['clock']}  {old_pose} -> {new_pose}")
         poses = Counter(s["shot_pose"]["pose"] or "none" for _, s in results)
         print("how the goal is struck (StatsBomb technique): " + ", ".join(f"{k} {n}" for k, n in sorted(poses.items())))
         for g, s in results:
@@ -354,6 +386,7 @@ def main():
     args = parser.parse_args()
 
     ids = game_ids()
+    last_poses = previous_poses()  # to report pose changes against the last build
     overrides = load_overrides()
     placements = load_shot_placement()
     print(f"{len(ids)} matches in {RAW}")
@@ -387,7 +420,7 @@ def main():
     for p in stale:
         p.unlink()
     print(f"deleted {len(stale)} clip files not in the index" + (": " + ", ".join(p.name for p in stale) if stale else ""))
-    report(matches, results, problems, skipped, len(ids))
+    report(matches, results, problems, skipped, len(ids), last_poses)
 
 
 if __name__ == "__main__":

@@ -505,6 +505,7 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
 
     times = [(frame["videoTimeMs"] - frames[0]["videoTimeMs"]) / 1000 for frame in frames]
     fps = meta["fps"]
+    tracked_players = [dict(f) for f in player_frames]  # as PFF tracked them, before any correction
     frame_ms = [f["videoTimeMs"] for f in frames]
     penalty = bool(goal.get("penalty"))
     # The shot is where StatsBomb has it taken (statsbomb_shot): PFF's shot event
@@ -715,7 +716,8 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     if final_shot is None:
         raise ValueError(f"shot contact {shot} missing from {[(c['f'], c['p']) for c in contacts if c['f'] > shot['f'] - 20]}")
     technique = (placement or {}).get("technique")
-    pose, pose_z, pose_angle = shot_pose(final_shot, technique, ball, times, player_frames)
+    # His facing from how he really moved (the corrections ease players about).
+    pose, pose_z, pose_angle = shot_pose(final_shot, technique, ball, times, tracked_players)
     dive = plan_dive(ball, times, player_frames, defender, shot["f"], side) if defender else None
     # It's a goal: the ball beats the keeper, it doesn't go through him (keepers.beat_keeper).
     dive = beat_keeper(dive, player_frames, times, shot["f"], tuple(sb_keeper) if sb_keeper else None, ball)
@@ -784,7 +786,8 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         "carries": carries,  # [first, last, player id]: dribbles the viewer holds at the player's feet
         "restarts": restart_info,  # throw-ins, corners, goal kicks, free kicks: see restarts.py
         "cleared": cleared_after is not None,  # a goal-line clearance: the ball comes back out
-        "kickFrame": shot["f"],  # the frame the shot leaves his foot (goalFrame is PFF's shot event)
+        "kickFrame": shot["f"],
+        "shotPose": pose or "none",  # how the goal is struck: none, half, volley, scissor, bicycle (volleys.py)  # the frame the shot leaves his foot (goalFrame is PFF's shot event)
         "keeperDive": dive,  # how the keeper reacts to the shot: see keepers.plan_dive
         "needsReview": correction["needs_review"],
         "teams": {"home": team_meta("home"), "away": team_meta("away")},

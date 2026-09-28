@@ -5,8 +5,9 @@ when StatsBomb says so:
 - Normal, Lob, Diving Header: an ordinary kick or header (no pose).
 - Half Volley: a standing half-volley pose ("half").
 - Volley: a standing volley ("volley"), or a scissor kick ("scissor") if the
-  ball is between SCISSOR_Z as it arrives and he's side-on to where he sends
-  it (SIDE_ON_DEG either side of square).
+  ball is between SCISSOR_Z at the contact and he's side-on to where he sends
+  it (SIDE_ON_DEG either side of square), by majority over the contact frame
+  +-VOTE_FRAMES (so moving the kick a frame or two can't flip it).
 - Overhead Kick: a bicycle kick ("bicycle"). No 2022 goal has it.
 The pose goes on the shot contact as "v". Other touches never get one.
 
@@ -15,12 +16,13 @@ moving, else toward where the ball comes from (players face the ball).
 """
 
 import math
+from collections import Counter
 
-SCISSOR_Z = (0.9, 1.4)  # higher than this at a foot touch, the tracked height is off (a foot reaches ~1.2 m)
-SIDE_ON_DEG = 25.0  # facing 90 +- this many degrees from the shot's direction: side-on
+SCISSOR_Z = (0.9, 1.4)  # at the contact, where his foot meets it (the touch rule keeps foot touches at 1.2 m or below)
+SIDE_ON_DEG = 30.0  # facing 90 +- this many degrees from the shot's direction: side-on
 FACING_S = 0.3
 MOVING_MPS = 1.5
-ARRIVE_FRAMES = 2
+VOTE_FRAMES = 2  # the pose is the majority over the contact frame +- this many
 POSES = {"Half Volley": "half", "Volley": "volley", "Overhead Kick": "bicycle"}
 
 
@@ -44,26 +46,43 @@ def facing(player_frames, ball, times, pid, f):
     return (dx / n, dy / n) if n > 1e-6 else None
 
 
-def shot_pose(shot, technique, ball, times, player_frames):
-    """Set shot["v"] from the StatsBomb technique (in place). Returns
-    (pose or None, ball height as it arrives, degrees between his facing and
-    the shot's direction or None)."""
-    f, pid = shot["f"], shot["p"]
+def _pose_at(technique, ball, times, player_frames, pid, k, direction):
+    """The pose if the contact were at frame k: the ball's height at k and his
+    facing then, against the shot's direction. Returns (pose, z, angle)."""
     pose = POSES.get(technique)
-    z = max((ball[k][2] for k in range(max(f - ARRIVE_FRAMES, 0), f + 1) if ball[k] is not None), default=0.0)
+    z = ball[k][2] if ball[k] is not None else 0.0
     angle = None
-    after = next((k for k in range(f + 1, len(ball)) if times[k] - times[f] >= 0.2 and ball[k] is not None), None)
-    face = facing(player_frames, ball, times, pid, f)
-    if after is not None and face is not None and ball[f] is not None:
-        dx, dy = ball[after][0] - ball[f][0], ball[after][1] - ball[f][1]
-        n = math.hypot(dx, dy)
-        if n > 1e-6:
-            angle = math.degrees(math.acos(max(-1.0, min(1.0, (face[0] * dx + face[1] * dy) / n))))
+    face = facing(player_frames, ball, times, pid, k)
+    if face is not None and direction is not None:
+        dx, dy = direction
+        angle = math.degrees(math.acos(max(-1.0, min(1.0, face[0] * dx + face[1] * dy))))
     if (pose == "volley" and SCISSOR_Z[0] <= z <= SCISSOR_Z[1] and angle is not None
             and abs(angle - 90) <= SIDE_ON_DEG):
         pose = "scissor"
+    return pose, z, angle
+
+
+def shot_pose(shot, technique, ball, times, player_frames):
+    """Set shot["v"] from the StatsBomb technique (in place). The height and
+    facing are taken at the contact frame itself, and the decision is the
+    majority over the contact frame +-VOTE_FRAMES, so it doesn't flip when the
+    kick frame moves by a frame or two. Returns (pose or None, ball height at
+    the contact, degrees between his facing and the shot's direction or None)."""
+    f, pid = shot["f"], shot["p"]
+    direction = None
+    after = next((k for k in range(f + 1, len(ball)) if times[k] - times[f] >= 0.2 and ball[k] is not None), None)
+    if after is not None and ball[f] is not None:
+        dx, dy = ball[after][0] - ball[f][0], ball[after][1] - ball[f][1]
+        n = math.hypot(dx, dy)
+        if n > 1e-6:
+            direction = (dx / n, dy / n)
+    here = _pose_at(technique, ball, times, player_frames, pid, f, direction)
+    votes = Counter(_pose_at(technique, ball, times, player_frames, pid, k, direction)[0]
+                    for k in range(max(f - VOTE_FRAMES, 0), min(f + VOTE_FRAMES, len(ball) - 1) + 1))
+    top = max(votes.values())
+    pose = here[0] if votes[here[0]] == top else next(p for p, n in votes.items() if n == top)
     if pose:
         shot["v"] = pose
     else:
         shot.pop("v", None)
-    return pose, z, angle
+    return pose, here[1], here[2]
