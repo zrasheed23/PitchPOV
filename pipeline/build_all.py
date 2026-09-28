@@ -237,6 +237,14 @@ def report(matches, results, problems, skipped, n_games):
             if r["out"] is not None:
                 print(f"  {clip_name(g)}  {g['scorer']} {g['clock']}  {KINDS[r['type']]}: out at frame {r['out']}, "
                       f"taken at frame {r['f']}")
+        kmoves = sorted(((m, name, g) for g, s in results for name, m in s["keeper_moves"].items()),
+                        key=lambda x: -x[0])
+        print(f"keepers kept in their area, on the ball-goal line when it's in their half: {len(kmoves)} keeper tracks, "
+              f"{sum(1 for m, _, _ in kmoves if m > 1)} moved more than 1 m, "
+              f"{sum(1 for m, _, _ in kmoves if m > 5)} more than 5 m (median largest move "
+              f"{statistics.median(m for m, _, _ in kmoves):.1f} m); biggest:")
+        for m, name, g in kmoves[:8]:
+            print(f"  {m:4.1f} m  {name}  in {clip_name(g)}  {g['scorer']} {g['clock']}")
         swapped = [(g, s) for g, s in results if s["swapped"]]
         if swapped:
             ok, n = (sum(s["toucher_near"][k] for _, s in swapped) for k in (0, 1))

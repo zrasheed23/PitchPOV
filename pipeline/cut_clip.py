@@ -21,6 +21,7 @@ from contacts import align_contacts, find_contacts
 from dribble import rebuild_dribbles
 from estimate_gaps import estimate_gaps
 from goals import clip_name, find_goals
+from keepers import place_keepers
 from penalty import find_keeper, pin_ball, place_players
 from restarts import apply_restarts, find_restarts, redraw_roll_out
 from touch_rule import violations
@@ -517,6 +518,11 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         keeper = find_keeper(player_frames, goal_index, side,
                              [pid for pid, p in players.items() if p["position"] == "GK" and pid != goal["scorerId"]])
         player_frames, moved = place_players(player_frames, times, goal_index, side, goal["scorerId"], keeper)
+    # Keepers stay in their area, on the ball-goal line when it's in their half (keepers.py).
+    frame_ms = [f["videoTimeMs"] for f in frames]
+    logged = [(c["f"], c["p"]) for c in find_contacts(events or [], frame_ms, set(players))]
+    keeper_moves = place_keepers(player_frames, times, chosen, [pid for pid, p in players.items() if p["position"] == "GK"],
+                                 goal_index, logged, skip={keeper} if penalty else set())
     aim, aim_source = shot_aim(goal, placement, override)
     ball, correction = correct_goal_mouth(chosen, times, goal_index, aim)
     # Only up to the shot: after it the path is the correction's (and physics_shot
@@ -527,7 +533,6 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         ball, after = smooth_jumps(ball, times, start=correction["cleared_after"])
         jumps += after
     # The ball only changes direction when someone touches it: straighten it between touches.
-    frame_ms = [f["videoTimeMs"] for f in frames]
     contacts = find_contacts(events or [], frame_ms, set(players))
     # How often the logged toucher is within 3 m of the tracked ball: checks the names.
     raw_ball = fill_gaps(paths["raw"])
@@ -685,6 +690,7 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         "aim": aim,
         "toucher_near": (sum(near), len(near)),
         "restarts": restart_info,
+        "keeper_moves": {players[pid]["name"]: m for pid, m in keeper_moves.items()},
         "votes": len(votes or {}),
         "swapped": votes is not None,
     }
