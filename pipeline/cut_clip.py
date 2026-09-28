@@ -25,6 +25,7 @@ from keepers import place_keepers
 from penalty import find_keeper, pin_ball, place_players
 from restarts import apply_restarts, find_restarts, redraw_roll_out
 from touch_rule import violations
+from volleys import find_volleys
 import relabel
 
 RAW = Path("data/raw")
@@ -610,6 +611,10 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     redraw = [r["f"] for r in restarts if r["f"] < shot["f"]] + ([shot["f"]] if shot_info["at_foot_moved"] > 0.05 else [])
     ball, contacts, rule_counts = enforce_touch_rule(ball, times_out, players_out, contacts, held, shot["f"],
                                                      keepers, moved=redraw)
+    # Scissor and overhead kicks: high foot touches side-on or with his back to goal (volleys.py).
+    scoring = goal["side"] if not goal["ownGoal"] else ("away" if goal["side"] == "home" else "home")
+    attacks = {pid: (side if p["team"] == scoring else -side) for pid, p in players.items()}
+    volleys = find_volleys(contacts, ball, times, player_frames, attacks)
     redraw_roll_out(ball, times, restart_info)
     ball = [tuple(round(v, 2) for v in b) if b is not None else None for b in ball]
     rule_breaks = violations(ball, times_out, contacts, players_out, goal_index, held)
@@ -691,6 +696,9 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         "toucher_near": (sum(near), len(near)),
         "restarts": restart_info,
         "keeper_moves": {players[pid]["name"]: m for pid, m in keeper_moves.items()},
+        "volleys": [{"f": c["f"], "name": players[c["p"]]["name"], "z": z, "angle": a,
+                     "shot": (c["f"], c["p"]) == (shot["f"], shot["p"]), "t": round(times[c["f"]] - times[goal_index], 2)}
+                    for c, a, z in volleys],
         "votes": len(votes or {}),
         "swapped": votes is not None,
     }

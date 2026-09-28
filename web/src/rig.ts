@@ -145,3 +145,48 @@ export function animateThrow(rig: Rig, k: number, hold: number) {
   rig.hipL.rotation.x = rig.hipR.rotation.x = 0
   rig.kneeL.rotation.x = rig.kneeR.rotation.x = -0.05 - wind * 0.15
 }
+
+// Scissor / overhead kick, k seconds from the contact (negative before).
+// `side` +1 kicks with the right leg. Take off (from -0.45 s), body back to
+// horizontal with the hips at ~1 m at the contact, kicking leg swinging up and
+// over while the other drops (the scissor), fall onto the back (to +0.45 s),
+// lie, get up (+1.0 to +1.8 s). The body pivots at the feet, so it is shifted
+// to keep its middle on the tracked position.
+export const VOLLEY_BEFORE_S = 0.45
+export const VOLLEY_AFTER_S = 1.8
+
+export function animateVolley(rig: Rig, k: number, side: 1 | -1) {
+  const load = ease((k + 0.45) / 0.08) * (1 - ease((k + 0.37) / 0.08))
+  const air = ease((k + 0.4) / 0.4) // leaving the ground, tipping back
+  const up = 1 - ease((k - 1.0) / 0.8) // 1 until he gets up
+  const tilt = Math.min(air, up) * 1.45 // ~83 degrees back: horizontal
+  const fall = ease((k - 0.05) / 0.4) // after the contact he drops onto his back
+  const hips = 1.0 * (1 - fall) + 0.12 * fall
+  rig.body.rotation.x = tilt
+  rig.body.rotation.z = side * 0.35 * Math.min(air, up) // side-on: rolled a little away from the kicking leg
+  // Hips at `hips` metres: the pivot is at the feet, so lift the body by the
+  // hips' drop and move it forward by half its swing back.
+  rig.body.position.y = Math.max(0, (hips - 0.92 * Math.cos(tilt)) * Math.min(air, up) - load * 0.12)
+  rig.body.position.x = 0
+  rig.body.position.z = -0.45 * Math.sin(tilt)
+
+  // Kicking leg: loaded back, swung up and over (past straight up at contact), then down.
+  const kick = side > 0 ? rig.hipR : rig.hipL
+  const kickKnee = side > 0 ? rig.kneeR : rig.kneeL
+  const other = side > 0 ? rig.hipL : rig.hipR
+  const otherKnee = side > 0 ? rig.kneeL : rig.kneeR
+  const swing = ease((k + 0.25) / 0.3) // 0 before, 1 at +0.05 s
+  const settle = ease((k - 0.15) / 0.5)
+  kick.rotation.x = up * ((-0.4 + 2.9 * swing) * (1 - settle) + 0.4 * settle)
+  kickKnee.rotation.x = -up * (0.9 * (1 - swing) + 0.1) * (1 - settle * 0.5)
+  // The other leg goes up first (the scissor), then drops as the kick comes through.
+  const lead = ease((k + 0.4) / 0.2) * (1 - ease((k + 0.15) / 0.25))
+  other.rotation.x = up * (1.3 * lead + 0.3 * settle)
+  otherKnee.rotation.x = -up * (0.5 * lead + 0.3)
+  // Arms out wide in the air, down to break the fall.
+  const wide = Math.min(air, 1 - fall * 0.6) * up
+  rig.shoulderL.rotation.z = -ARM_REST_Z - 1.2 * wide
+  rig.shoulderR.rotation.z = ARM_REST_Z + 1.2 * wide
+  rig.shoulderL.rotation.x = rig.shoulderR.rotation.x = 0.6 * fall * up
+  rig.elbowL.rotation.x = rig.elbowR.rotation.x = 0.3
+}

@@ -8,7 +8,19 @@ import { colorDistance, kitColors } from './kit'
 import { distanceAt, runDistances, velocities } from './motion'
 import type { Playback } from './playback'
 import { type Kit, PlayerBody } from './Player'
-import { DIVE_LENGTH_S, PLAYER_HEIGHT, THROW_AFTER_S, type Rig, animateDive, animateRig, animateThrow, animateTouch } from './rig'
+import {
+  DIVE_LENGTH_S,
+  PLAYER_HEIGHT,
+  THROW_AFTER_S,
+  VOLLEY_AFTER_S,
+  VOLLEY_BEFORE_S,
+  type Rig,
+  animateDive,
+  animateRig,
+  animateThrow,
+  animateTouch,
+  animateVolley,
+} from './rig'
 
 const TOUCH_WINDOW_S = 0.25 // a touch is animated this long either side
 const TOUCH_PULL_S = 0.12 // the ball is shifted onto the foot/head this long either side
@@ -296,9 +308,14 @@ export function Replay({ clip, track, playback, ball, onEnded }: ReplayProps) {
       if (!rig) continue
       const k = dive && dive.keeperId === id ? pb.time - dive.start : -1
       const th = throws.find((w) => w.p === id && pb.time > w.t - w.hold - 0.3 && pb.time < w.t + THROW_AFTER_S)
+      const vo = touches.find((c) => c.v && c.p === id && pb.time > c.t - VOLLEY_BEFORE_S && pb.time < c.t + VOLLEY_AFTER_S)
       if (dive && k >= 0 && k < DIVE_LENGTH_S) {
         g.rotation.y = yaw.current[id] = dive.yaw
         animateDive(rig, k, dive.side, dive.strength)
+      } else if (vo) {
+        // His back to where the ball goes: the kick goes up and over him.
+        if (vo.dir) g.rotation.y = yaw.current[id] = Math.atan2(vo.dir[0], -vo.dir[1])
+        animateVolley(rig, pb.time - vo.t, vo.b === 'L' ? -1 : 1)
       } else if (th) {
         if (th.dir[0] || th.dir[1]) g.rotation.y = yaw.current[id] = Math.atan2(-th.dir[0], th.dir[1])
         animateRig(rig, 0, 0)

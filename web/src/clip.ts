@@ -43,7 +43,7 @@ export interface Clip {
   goalT: number
   ballSource: 'smoothed' | 'raw' // which PFF ball feed the pipeline picked
   ballCorrected: boolean // the pipeline moved the post-shot ball path so it goes in
-  contacts?: { f: number; p: string; b: string; s?: 1 | 2 }[] // every touch: frame, player id, body part (R/L/F foot, H head, X hands); s = added (1 a dribble push, 2 where the ball changes course near him)
+  contacts?: { f: number; p: string; b: string; s?: 1 | 2; v?: 1 }[] // every touch: frame, player id, body part (R/L/F foot, H head, X hands); s = added (1 a dribble push, 2 where the ball changes course near him); v = scissor/overhead kick
   carries?: [number, number, string][] // dribbles the pipeline couldn't rebuild: first frame, last frame, player id
   // Throw-ins (T), corners (C), goal kicks (G), free kicks (F), kick-offs (K) before the shot: the
   // restart frame and taker; hold = [first, last] frames a throw-in is held over his head.
