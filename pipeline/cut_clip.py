@@ -22,6 +22,7 @@ from dribble import rebuild_dribbles
 from estimate_gaps import estimate_gaps
 from goals import clip_name, find_goals
 from keepers import defending_keeper, ease_to_freeze_frame, place_keepers, plan_dive
+from net import across_the_line
 from penalty import find_keeper, pin_ball, place_players
 from restarts import apply_restarts, find_restarts, redraw_roll_out
 from touch_rule import violations
@@ -499,6 +500,7 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         player_frames.append(positions)
 
     times = [(frame["videoTimeMs"] - frames[0]["videoTimeMs"]) / 1000 for frame in frames]
+    fps = meta["fps"]
     # The scorer's team: for an own goal that's the conceding player on the ball.
     team = [xy for pid, xy in player_frames[goal_index].items() if players[pid]["team"] == goal["side"]]
     paths = {source: drop_out_of_play(ball_path(frames, source, length, width), goal_index) for source in BALL_SOURCES}
@@ -600,8 +602,17 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     # The shot: from the shooter's foot, one kick to where it crosses the line (ball_rules.py).
     shooter_team = players[shot["p"]]["team"] if shot["p"] in players else goal["side"]
     deflections = [c for c in late_contacts if players[c["p"]]["team"] != shooter_team]
+    # A goal-line clearance needs a defender to clear it: a logged touch by the
+    # defending team within a second of the ball's deepest point. Without one,
+    # the ball coming back out is the net or the tracking: it's a goal in the net.
+    scoring = goal["side"] if not goal["ownGoal"] else ("away" if goal["side"] == "home" else "home")
+    cleared_after = correction.get("cleared_after")
+    if cleared_after is not None and not any(
+            players[c["p"]]["team"] != scoring and c["p"] != shot["p"] and shot["f"] < c["f"] <= cleared_after + round(fps)
+            for c in late_contacts):
+        cleared_after = None
     ball, shot_info = fly_shot(ball, times, player_frames, shot["f"], shot["p"], shot["b"], side, penalty or direct,
-                               correction.get("cleared_after"), deflections)
+                               cleared_after, deflections)
     # After the kick only a deflection with the ball near him touches it (the
     # shot is logged twice, or by a player the ball never reaches).
     contacts = sorted([c for c in contacts if c["f"] < shot["f"] or c is shot] + shot_info["deflected"],
@@ -628,6 +639,7 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     redraw_roll_out(ball, times, restart_info)
     ball = [tuple(round(v, 2) for v in b) if b is not None else None for b in ball]
     rule_breaks = violations(ball, times_out, contacts, players_out, goal_index, held)
+    line_change = across_the_line(ball, times_out, shot["f"], side)
     kinks_after = count_kinks(ball, times, player_frames, touch_frames, goal_index)
     missing_ball = sum(p is None for p in paths[ball_source])
 
@@ -695,6 +707,8 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         "straightened": straightened,
         "simulated": simulated,
         "shot": shot_info,
+        "cleared": cleared_after is not None,
+        "line_change": line_change,
         "rule_before": rule_before,
         "rule_breaks": rule_breaks,
         "rule_counts": rule_counts,

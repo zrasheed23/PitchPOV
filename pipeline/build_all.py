@@ -259,6 +259,14 @@ def report(matches, results, problems, skipped, n_games):
                 ang = "?" if sp["angle"] is None else f"{sp['angle']:.0f}"
                 print(f"  {clip_name(g)}  {g['scorer']} {g['clock']}  {sp['technique']} -> {sp['pose']}: "
                       f"ball {sp['z']:.2f} m, facing {ang} deg from the shot")
+        lines = [(g, s["line_change"]) for g, s in results if s["line_change"] and not s["cleared"]]
+        free = [(g, lc) for g, lc in lines if not lc[2]]
+        print(f"ball across the goal line (0.07 s either side, on the ground plane; the net simulated from the "
+              f"crossing): {len(lines)} clips, {len(lines) - len(free)} caught by the netting straight away; the rest turn at most "
+              f"{max((lc[0] for _, lc in free), default=0):.1f} deg and change speed "
+              f"{100 * min((lc[1] for _, lc in free), default=0):+.0f}% to {100 * max((lc[1] for _, lc in free), default=0):+.0f}%")
+        for g, lc in sorted(free, key=lambda x: -x[1][0])[:3]:
+            print(f"  {clip_name(g)}  {g['scorer']} {g['clock']}  {lc[0]:.1f} deg, speed {100 * lc[1]:+.0f}%")
         swapped = [(g, s) for g, s in results if s["swapped"]]
         if swapped:
             ok, n = (sum(s["toucher_near"][k] for _, s in swapped) for k in (0, 1))

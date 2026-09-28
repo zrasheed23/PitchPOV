@@ -4,7 +4,8 @@
    he hits it, then flies as one kick straight to where it crosses the line
    (StatsBomb's end location after the goal-mouth correction), at a real shot
    speed. It only changes direction on the way if a logged keeper or defender
-   touch has the ball near him. Past the line it goes into the net as before.
+   touch has the ball near him. Past the line it's simulated into the net
+   (net.py), carrying on exactly as it crossed.
 2. Every other touch has the ball within reach of the player touching it.
 3. Between two touches (enforce_touch_rule): wherever the ball still turns,
    changes speed or rises by itself, either
@@ -20,7 +21,8 @@
 import math
 
 from ball_physics import MIN_FLIGHT_S, simulate, solve_kick, solve_to_height
-from goal_mouth import GOAL_LINE_X, _into_net
+from goal_mouth import GOAL_LINE_X
+from net import into_net
 from touch_rule import REACH_M, REACH_Z, WINDOW, violations
 
 ADD_TOUCH_M = 2.5
@@ -275,6 +277,7 @@ def fly_shot(ball, times, player_frames, kick, shooter, part, side, penalty=Fals
     points = [(f, t0 + (t - t0) * scale, p) for f, t, p in points]
     points.append((None, t0 + want, target))
     old = list(out)
+    v_end = None  # the ball's velocity as it crosses the line
     for (_, ta, pa), (_, tb, pb) in zip(points, points[1:]):
         distance = math.hypot(pb[0] - pa[0], pb[1] - pa[1])
         peak = max([pa[2], pb[2]] + [old[k][2] for k in range(kick, k_cross) if old[k] is not None
@@ -295,6 +298,13 @@ def fly_shot(ball, times, player_frames, kick, shooter, part, side, penalty=Fals
                 w = (times[k] - ta) / (tb - ta)
                 zk = pa[2] + (pb[2] - pa[2]) * w
             out[k] = (pa[0] + (pb[0] - pa[0]) * w, pa[1] + (pb[1] - pa[1]) * w, max(zk, 0.0))
+        ux, uy = ((pb[0] - pa[0]) / distance, (pb[1] - pa[1]) / distance) if distance > 1e-6 else (0.0, 0.0)
+        if kick_v is not None:
+            dur, eps = tb - ta, 0.004
+            s2, z2, _ = simulate(pa[2], kick_v[0], kick_v[1], [dur - eps, dur])
+            v_end = (ux * (s2[1] - s2[0]) / eps, uy * (s2[1] - s2[0]) / eps, (z2[1] - z2[0]) / eps)
+        else:
+            v_end = ((pb[0] - pa[0]) / (tb - ta), (pb[1] - pa[1]) / (tb - ta), (pb[2] - pa[2]) / (tb - ta))
         for f, t, p in points:
             if f is not None and t == ta:
                 out[f] = p
@@ -302,7 +312,10 @@ def fly_shot(ball, times, player_frames, kick, shooter, part, side, penalty=Fals
     t_new = points[-1][1]
     k_new = next((k for k in range(kick + 1, len(out)) if times[k] >= t_new), len(out))
     if cleared_after is None:
-        _into_net(out, times, k_new, t_new, target, side)
+        # Past the line: simulated into the net from exactly how it crossed (net.py).
+        rel = [times[k] - t_new for k in range(k_new, len(out))]
+        for k, p in zip(range(k_new, len(out)), into_net(target, v_end, rel, side)):
+            out[k] = p
     else:
         # The clearance plays on from the new crossing time.
         for k in range(k_new, len(out)):
