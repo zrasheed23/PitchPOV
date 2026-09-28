@@ -142,11 +142,13 @@ def solve_to_height(z0, distance, duration, z_end, w_lo=-8.0, w_hi=20.0, step=1.
     return None
 
 
-def apply_physics(ball, times, anchors, end, touch_heights=None):
+def apply_physics(ball, times, anchors, end, touch_heights=None, min_peak=None):
     """Replace every free-flight stretch between consecutive anchor frames (up to
     frame `end`) with a simulated ball. touch_heights maps a frame to the height
     range (lo, hi) the ball can be at when touched there (feet, head, hands), so
     a tracked height a player couldn't reach gets pulled into range first.
+    min_peak maps a frame to the least height a flight from it reaches (a
+    StatsBomb high pass).
     Returns (ball, stretches simulated)."""
     out = list(ball)
     anchors = sorted(a for a in set(anchors) if a <= end)
@@ -167,6 +169,7 @@ def apply_physics(ball, times, anchors, end, touch_heights=None):
         if distance < 0.5:
             continue
         peak = max((out[k][2] for k in range(a, b + 1) if out[k] is not None), default=0.0)
+        peak = max(peak, (min_peak or {}).get(a, 0.0))  # a lofted pass by the event data
         kick = solve_kick(az, distance, duration, peak)
         if kick is None:
             continue

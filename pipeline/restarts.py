@@ -29,6 +29,7 @@ from contacts import body_part
 HALF_L, HALF_W = 52.5, 34.0
 ROLL_OUT_DECEL = 4.0  # m/s^2: slows fast once it's off the grass and among the boards
 OUT_ROLL_S = 1.5
+ROLL_OUT_MAX_MPS = 15.0
 HOLD_S = 1.0  # throw-in: ball above his head this long before the throw
 PICKUP_S = 0.3
 HOLD_Z = 2.3
@@ -37,6 +38,7 @@ PLACED_S = 2.0
 TAKER_BEHIND_M = 0.35
 PICKUP_NEAR_M = 1.5  # the ball stopped this close to the throw spot: he picks that one up
 HIDE_AFTER_S = 0.5  # a ball that stopped somewhere else stays in view this long, then is hidden
+QUICK_S = 0.5  # less time than HIDE_AFTER_S + this before the restart: it's taken where the ball stopped
 PLAYER_EASE_S = 1.2
 PLAYER_CATCHUP_MPS = 4.0  # a taker tracked far from the ball is eased in no faster than this on top of his run
 AT_SPOT_M = 3.0
@@ -140,6 +142,8 @@ def _roll_out(ball, times, o, stop_by, last_touch=None):
         if n > 1e-6:
             vx, vy = (b[0] - frm[0]) / n * speed, (b[1] - frm[1]) / n * speed
     speed = math.hypot(vx, vy)
+    if speed > ROLL_OUT_MAX_MPS:  # a frame just moved to a touch spot: not a real speed
+        vx, vy, speed = vx / speed * ROLL_OUT_MAX_MPS, vy / speed * ROLL_OUT_MAX_MPS, ROLL_OUT_MAX_MPS
     t_stop = min(speed / ROLL_OUT_DECEL, OUT_ROLL_S)
     decel = speed / t_stop if t_stop > 0 else 0.0
     z0 = b[2]
@@ -168,12 +172,13 @@ def apply_restarts(ball, times, player_frames, restarts, next_touch, last_touch=
         taker = player_frames[f].get(pid)
         ball_at = ball[f][:2] if ball[f] is not None else None
         spot = _spot(kind, ball_at, taker)
-        # PFF can log a restart late (or early): it's taken at the last frame the
-        # tracked ball is still at the spot (in reach of it for a throw-in).
+        # PFF can log a restart late (or early): unless StatsBomb timed it
+        # ("timed"), it's taken at the last frame the tracked ball is still at
+        # the spot (in reach of it for a throw-in).
         last = len(ball) - 1 if last_frame is None else last_frame
         near = [k for k in range(last + 1) if -TAKEN_EARLY_S <= times[k] - times[f] <= TAKEN_LATE_S
                 and ball[k] is not None and math.dist(ball[k][:2], spot) <= AT_SPOT_M]
-        if near and (r["out"] is None or max(near) > r["out"]):
+        if near and not r.get("timed") and (r["out"] is None or max(near) > r["out"]):
             f = r["f"] = max(near)
             taker = player_frames[f].get(pid)
         start = r["out"] if r["out"] is not None and r["out"] < f and ball[r["out"]] is not None else 0
@@ -186,7 +191,10 @@ def apply_restarts(ball, times, player_frames, restarts, next_touch, last_touch=
             if start > 0 else 0
         if start > 0:
             stop, at = _roll_out(ball, times, start, f, last_touch(start))
-            if math.dist(at[:2], spot) <= PICKUP_NEAR_M and kind in ("T", "F"):
+            quick = times[f] - times[stop] < HIDE_AFTER_S + QUICK_S  # no time to fetch or place a ball
+            if quick and kind != "T":
+                spot = at[:2]  # taken from where it stopped
+            if quick or (kind in ("T", "F") and math.dist(at[:2], spot) <= PICKUP_NEAR_M):
                 placed_from = max(placed_from, stop)
                 for k in range(stop, placed_from):
                     ball[k] = at

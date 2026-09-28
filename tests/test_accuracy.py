@@ -31,3 +31,19 @@ def test_each_check_finds_its_problem():
     found = check_clip(clip, sb, {"y": 2.0, "z": 0.1})
     assert found["touch far"] and found["sprint"] and found["statsbomb missing"] and found["crossing off"]
     assert any("before the kick" in f for f in found["keeper dive"])
+
+
+def test_statsbomb_touches_lead_and_replace_pff_duplicates():
+    from statsbomb import merge_touches
+    times = [k / 30 for k in range(100)]
+    ball = [(float(k) * 0.2, 0.0, 0.0) for k in range(100)]
+    tracked = [True] * 100
+    raw = {"type": {"name": "Clearance"}}
+    sb = [{"f": 40, "p": "cb", "b": "H", "type": "Clearance", "on_ball": True, "xy": (8.0, 0.0), "raw": raw},
+          {"f": 60, "p": "d", "b": "F", "type": "Ball Receipt*", "on_ball": True, "xy": (20.0, 5.0), "raw": raw},
+          {"f": 90, "p": "s", "b": "R", "type": "Ball Recovery", "on_ball": True, "xy": (18.0, 0.0), "raw": raw}]
+    pff = [{"f": 42, "p": "cb", "b": "F"}, {"f": 92, "p": "s", "b": "L"}]
+    contacts, out, placed, _, counts = merge_touches(pff, sb, ball, tracked, times, 92, shooter="s")
+    assert [(c["f"], c["p"], c["b"]) for c in contacts] == [(40, "cb", "H"), (60, "d", "F"), (92, "s", "L")]
+    assert placed == [60] and out[60] == (20.0, 5.0, 0.11)  # the tracked ball is nowhere near: put there
+    assert counts["added"] == 1 and counts["pff_replaced"] == 1

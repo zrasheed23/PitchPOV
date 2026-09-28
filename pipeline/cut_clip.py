@@ -4,6 +4,7 @@ Usage: python pipeline/cut_clip.py GAME_ID GAME_EVENT_ID OUT_PATH
 To cut every goal in the tournament, use build_all.py.
 """
 
+import bisect
 import bz2
 import itertools
 import json
@@ -17,7 +18,7 @@ from goal_mouth import correct_goal_mouth, goal_side
 from accuracy import check_clip
 from ball_flight import anchor_frames, count_kinks, straighten_free_flight
 from ball_physics import apply_physics
-from ball_rules import enforce_touch_rule, find_kick, fly_shot, shot_contact
+from ball_rules import enforce_touch_rule, find_kick, fly_shot, limit_player_speeds, meet_touches, shot_contact
 from contacts import align_contacts, find_contacts
 from dribble import rebuild_dribbles
 from estimate_gaps import estimate_gaps
@@ -26,7 +27,7 @@ from keepers import defending_keeper, ease_to_freeze_frame, place_keepers, plan_
 from net import across_the_line
 from penalty import find_keeper, pin_ball, place_players
 from restarts import apply_restarts, find_restarts, redraw_roll_out
-from statsbomb import clip_events, match_events
+from statsbomb import clip_events, match_events, merge_touches
 from touch_rule import violations
 from volleys import shot_pose
 import relabel
@@ -548,12 +549,30 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     late_contacts = [c for c in contacts if c["f"] > goal_index]  # possible deflections of the shot
     # Event times can be off by half a second: line each touch up with the tracking (contacts.py).
     contacts, ball, contact_fixes = align_contacts(contacts, ball, tracked, player_frames, times, goal_index)
+    # StatsBomb's on-ball actions are the primary touches (statsbomb.merge_touches).
+    # The kick: the frame the tracked ball leaves the scorer (ball_rules.find_kick).
+    kick0 = goal_index if penalty else find_kick(ball, times, player_frames, goal["scorerId"], goal_index, side=side)
+    sb_clip, sb_shift = clip_statsbomb(meta, roster, events, frame_ms, players, player_frames, ball, tracked, goal, side)
+    contacts, ball, sb_placed, lofted, sb_counts = merge_touches(
+        contacts, [] if penalty else sb_clip, ball, tracked, times, max(goal_index, kick0), goal["scorerId"], player_frames)
     if penalty:  # a shot touch lined up before the kick is the kick itself
         contacts = [{**c, "f": max(c["f"], goal_index)} for c in contacts]
         contacts = [c for n, c in enumerate(contacts) if not any(d["f"] == c["f"] and d["p"] == c["p"]
                                                                   for d in contacts[:n])]
     # Restarts: the ball stops out of play and is put back by the taker (restarts.py).
     restarts = [] if penalty else find_restarts(events or [], frame_ms, goal_index, set(players))
+    for r in restarts:
+        # The ball is only dead after the last StatsBomb action before the restart.
+        live = [c["f"] for c in contacts if c.get("sb") and (r["out"] or 0) < c["f"] < r["f"] - 3
+                and c["p"] != r["p"]]
+        if live:
+            r["out"] = max(live)
+    for r in restarts:  # StatsBomb's time for the restart kick, if it has the taker's touch
+        sb_touch = [c for c in contacts if c.get("sb") and c["p"] == r["p"] and abs(c["f"] - r["f"]) <= round(1.5 * fps)
+                    and (r["out"] is None or c["f"] > r["out"])]
+        if sb_touch:
+            r["f"] = min(sb_touch, key=lambda c: abs(c["f"] - r["f"]))["f"]
+            r["timed"] = True
     restart_info, dead = apply_restarts(ball, times, player_frames, restarts,
                                         lambda f: next((c["f"] for c in contacts if c["f"] > f), None),
                                         lambda f: next((c["f"] for c in reversed(contacts) if c["f"] < f), None),
@@ -561,7 +580,8 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     dead_ball = {k: ball[k] for a, b in dead for k in range(a, b + 1)}
     contacts = [c for c in contacts if not any(a < c["f"] <= b for a, b in dead)
                 and not any(c["p"] == r["p"] and abs(c["f"] - r["f"]) <= 12 for r in restarts)]
-    contacts = sorted(contacts + [{"f": r["f"], "p": r["p"], "b": r["b"]} for r in restarts], key=lambda c: c["f"])
+    contacts = sorted(contacts + [{"f": r["f"], "p": r["p"], "b": r["b"]} | ({"sb": "Pass"} if r.get("timed") else {})
+                                  for r in restarts], key=lambda c: c["f"])
     direct = any(r["f"] >= goal_index - 3 for r in restarts)  # a goal straight from a free kick
     # The shot: PFF can log it after the ball has left his foot (ball_rules.find_kick).
     shot = shot_contact(contacts, goal, goal_index)
@@ -569,7 +589,7 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         shot = {"f": goal_index, "p": goal["scorerId"], "b": "F"}
         contacts = sorted(contacts + [shot], key=lambda c: c["f"])
     if not penalty and not direct:
-        kick = find_kick(ball, times, player_frames, shot["p"], shot["f"], shot["b"])
+        kick = find_kick(ball, times, player_frames, shot["p"], shot["f"], shot["b"], side)
         contacts = [c for c in contacts if c is shot or c["f"] < kick]
         shot["f"] = kick
     # The keeper at the shot: where StatsBomb's freeze frame has him (keepers.py).
@@ -593,7 +613,7 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     # Heights the ball can be at when touched: feet, head or hands.
     reach = {"H": (1.6, 2.3), "X": (0.5, 2.6)}
     touch_heights = {c["f"]: reach.get(c["b"], (0.0, 1.2)) for c in contacts}
-    ball, simulated = apply_physics(ball, times, anchors, goal_index, touch_heights)
+    ball, simulated = apply_physics(ball, times, anchors, goal_index, touch_heights, lofted)
     ball, straightened = straighten_free_flight(ball, player_frames, held, goal_index)
     if penalty:  # keep the ball on the spot whatever smoothing does before the kick
         ball = pin_ball(ball, goal_index, side)
@@ -609,15 +629,17 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     # the ball coming back out is the net or the tracking: it's a goal in the net.
     scoring = goal["side"] if not goal["ownGoal"] else ("away" if goal["side"] == "home" else "home")
     cleared_after = correction.get("cleared_after")
-    if cleared_after is not None and not any(
-            players[c["p"]]["team"] != scoring and c["p"] != shot["p"] and shot["f"] < c["f"] <= cleared_after + round(fps)
-            for c in late_contacts):
+    clearer = next((c for c in late_contacts if cleared_after is not None and players[c["p"]]["team"] != scoring
+                    and c["p"] != shot["p"] and shot["f"] < c["f"] <= cleared_after + round(fps)), None)
+    if clearer is None:
         cleared_after = None
     ball, shot_info = fly_shot(ball, times, player_frames, shot["f"], shot["p"], shot["b"], side, penalty or direct,
                                cleared_after, deflections)
     # After the kick only a deflection with the ball near him touches it (the
     # shot is logged twice, or by a player the ball never reaches).
-    contacts = sorted([c for c in contacts if c["f"] < shot["f"] or c is shot] + shot_info["deflected"],
+    # A goal-line clearance: the defender's touch where the ball turns back.
+    clearance = [{**clearer, "f": shot_info["line_frame"]}] if clearer and shot_info.get("line_frame") else []
+    contacts = sorted([c for c in contacts if c["f"] < shot["f"] or c is shot] + shot_info["deflected"] + clearance,
                       key=lambda c: c["f"])
     carries = [[a, min(b, shot["f"] - 1), p] for a, b, p in carries if a < shot["f"] - 1]
     held = carries + [[a, b, ""] for a, b in dead]  # the touch rule leaves dead balls alone
@@ -625,12 +647,17 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     # Before the shot the ball only turns, speeds up or rises at a touch (ball_rules.py).
     keepers = {pid: (1 if player_frames[goal_index][pid][0] > 0 else -1) for pid, p in players.items()
                if p["position"] == "GK" and pid in player_frames[goal_index]}
+    # Every touch meets the player: players onto a well-supported ball (ball_rules.meet_touches).
+    met, too_far = meet_touches(ball, times, player_frames, [c for c in contacts if c["f"] < shot["f"]] + clearance,
+                                len(frames) - 1, skip={r["f"] for r in restarts})
     # Checked and fixed on the clip as written (2 decimals; times to the ms).
     times_out = [round(t, 3) for t in times]
     players_out = [{pid: (round(x, 2), round(y, 2)) for pid, (x, y) in ps.items()} for ps in player_frames]
-    redraw = [r["f"] for r in restarts if r["f"] < shot["f"]] + ([shot["f"]] if shot_info["at_foot_moved"] > 0.05 else [])
+    redraw = ([r["f"] for r in restarts if r["f"] < shot["f"]] + [f for f in sb_placed if f < shot["f"]]
+              + ([shot["f"]] if shot_info["at_foot_moved"] > 0.05 else []))
     ball, contacts, rule_counts = enforce_touch_rule(ball, times_out, players_out, contacts, held, shot["f"],
-                                                     keepers, moved=redraw)
+                                                     keepers, moved=redraw, keep=[r["f"] for r in restarts],
+                                                     leave=too_far)
     # How the scorer strikes it: StatsBomb's shot technique (volleys.py).
     final_shot = next((c for c in contacts if (c["f"], c["p"]) == (shot["f"], shot["p"])), None)
     if final_shot is None:
@@ -644,6 +671,14 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     line_change = across_the_line(ball, times_out, shot["f"], side)
     kinks_after = count_kinks(ball, times, player_frames, touch_frames, goal_index)
     missing_ball = sum(p is None for p in paths[ball_source])
+
+    # Nobody runs faster than a sprint; touches stay where they are.
+    fixed = {}
+    for c in contacts:
+        fixed.setdefault(c["p"], set()).add(c["f"])
+    if defender:
+        fixed.setdefault(defender, set()).update(range(shot["f"], len(frames)))  # the keeper's spot and dive
+    sped = limit_player_speeds(player_frames, times, fixed)
 
     out_frames = []
     for t, b, ps in zip(times, ball, player_frames):
@@ -692,7 +727,6 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         "frames": out_frames,
     }
     # StatsBomb's events in this clip, and the accuracy report on the clip as written (accuracy.py).
-    sb_clip, sb_shift = clip_statsbomb(meta, roster, events, frame_ms, players, contacts, goal, side)
     accuracy = check_clip(clip, sb_clip, placement)
     stats = {
         "frames": len(out_frames),
@@ -717,6 +751,13 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         "line_change": line_change,
         "accuracy": accuracy,
         "sb_shift": sb_shift,
+        "sb_counts": sb_counts,
+        "sb_goal_frame": next((e["f"] for e in sb_clip if e["type"] == "Shot" and e["p"] == goal["scorerId"]
+                               and (e["raw"].get("shot") or {}).get("outcome", {}).get("name") == "Goal"), None),
+        "met": [(players[c["p"]]["name"], c["f"], round(m, 2)) for c, m in met],
+        "too_far": [(players[c["p"]]["name"], c["f"]) for c in too_far],
+        "sped": {players[pid]["name"]: round(m, 2) for pid, m in sped.items()},
+        "kick_shift": round(times[shot["f"]] - times[goal_index], 2),
         "rule_before": rule_before,
         "rule_breaks": rule_breaks,
         "rule_counts": rule_counts,
@@ -739,9 +780,10 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     return clip, stats
 
 
-def clip_statsbomb(meta, roster, events, frame_ms, players, contacts, goal, side):
-    """The clip's StatsBomb events (statsbomb.clip_events) and the time shift
-    that lines them up with its logged touches; ([], 0) without StatsBomb."""
+def clip_statsbomb(meta, roster, events, frame_ms, players, player_frames, ball, tracked, goal, side):
+    """The clip's StatsBomb events (statsbomb.clip_events), lined up with the
+    tracked players and ball (where the feed really had it), and the time
+    shift; ([], 0) without StatsBomb."""
     sb = match_events(meta, roster, events or [])
     if not sb:
         return [], 0.0
@@ -750,8 +792,17 @@ def clip_statsbomb(meta, roster, events, frame_ms, players, contacts, goal, side
               for r in roster if r["team"]["id"] == tid}
     scoring = goal["side"] if not goal["ownGoal"] else ("away" if goal["side"] == "home" else "home")
     attack = {scoring: side, ("away" if scoring == "home" else "home"): -side}
+    secs = [ms / 1000 for ms in frame_ms]
+
+    def where(pid, t):
+        if not secs[0] <= t <= secs[-1]:
+            return None, None
+        k = bisect.bisect_left(secs, t, hi=len(secs) - 1)
+        b = ball[k] if tracked[k] and ball[k] is not None else None
+        return player_frames[k].get(pid), (b[:2] if b else None)
+
     return clip_events(sb, frame_ms, lambda s_, n: pid_of.get((s_, n)) if pid_of.get((s_, n)) in players else None,
-                       attack, [(c["f"], c["p"]) for c in contacts if not c.get("s")])
+                       attack, where)
 
 
 def max_ball_speed(ball, times, window=3):

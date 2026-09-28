@@ -21,6 +21,7 @@ LIFT_MPS = 1.0  # the ball's upward speed growing this much with no touch or bou
 GROUND_Z = 0.3  # a bounce between two frames can leave the lowest one this high
 REACH_M = 1.5  # player centre to ball, on the ground plane, for a touch to count
 REACH_Z = 2.6
+JUMP_MPS = 45.0  # faster than the hardest shot between two frames: a jump
 GOAL_LINE_X = 52.5
 
 
@@ -52,8 +53,8 @@ def _vel(ball, times, a, b):
 
 def violations(ball, times, contacts, player_frames, goal_index, carries=(), end=None):
     """[(frame, kind)] where the ball breaks the rule, kind one of "turn",
-    "speed", "lift" or "far touch" (a logged touch with the ball out of the
-    player's reach). Checked up to the goal-line crossing (or `end`)."""
+    "speed", "lift", "jump" (between frame-1 and frame, even at a touch) or
+    "far touch" (a logged touch with the ball out of the player's reach). Checked up to the goal-line crossing (or `end`)."""
     if end is None:
         end = crossing_frame(ball, goal_index)
     if end is None:
@@ -75,6 +76,12 @@ def violations(ball, times, contacts, player_frames, goal_index, carries=(), end
         if math.hypot(ball[f][0] - px, ball[f][1] - py) > REACH_M or ball[f][2] > REACH_Z:
             found.append((f, "far touch"))
 
+    # A jump between two frames faster than any kick, touch or not.
+    for i in range(1, end):
+        a, b = ball[i - 1], ball[i]
+        if (a is not None and b is not None and i not in held and i - 1 not in held and times[i] > times[i - 1]
+                and math.dist(a, b) / (times[i] - times[i - 1]) > JUMP_MPS):
+            found.append((i, "jump"))
     for i in range(WINDOW, end - WINDOW):  # the frame at `end` is already over the line
         if i in held or touch_near(i, WINDOW):
             continue
@@ -95,7 +102,8 @@ def violations(ball, times, contacts, player_frames, goal_index, carries=(), end
             kind = "lift"
         elif i - LONG_WINDOW >= 0 and i + LONG_WINDOW <= end and not touch_near(i, LONG_WINDOW):
             a2, b2 = i - LONG_WINDOW, i + LONG_WINDOW
-            if b2 < end and ball[a2] is not None and ball[b2] is not None:
+            if (b2 < end and ball[a2] is not None and ball[b2] is not None
+                    and not any(k in held for k in range(a2, b2 + 1))):  # a carry is the viewer's
                 va2, vb2 = _vel(ball, times, a2, i), _vel(ball, times, i, b2)
                 if (math.hypot(va2[0], va2[1]) >= TURN_MIN_MPS and math.hypot(vb2[0], vb2[1]) >= TURN_MIN_MPS
                         and _angle(va2, vb2) > TURN_DEG):

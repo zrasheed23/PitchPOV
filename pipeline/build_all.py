@@ -281,6 +281,31 @@ def report(matches, results, problems, skipped, n_games):
                       f"toucher within 3 m {s['toucher_near'][0]}/{s['toucher_near'][1]}")
         ok, n = (sum(s["toucher_near"][k] for _, s in results if not s["swapped"]) for k in (0, 1))
         print(f"logged toucher within 3 m of the ball, other clips: {ok}/{n} ({100 * ok / max(n, 1):.0f}%)")
+        sbc = [(g, s["sb_counts"]) for g, s in results]
+        print(f"StatsBomb touches merged: {sum(c['statsbomb'] for _, c in sbc)} "
+              f"({sum(c['added'] for _, c in sbc)} actions PFF lacked, in {sum(1 for _, c in sbc if c['added'])} clips; "
+              f"{sum(c['pff_replaced'] for _, c in sbc)} PFF touches replaced; ball re-drawn through "
+              f"{sum(c['placed'] for _, c in sbc)} StatsBomb spots); most changed:")
+        for g, c in sorted(sbc, key=lambda gc: -(gc[1]["added"] + gc[1]["placed"]))[:6]:
+            print(f"  {clip_name(g)}  {g['scorer']} {g['clock']}  {c['added']} added, {c['placed']} re-drawn")
+        def top(rows, key, label, n=5):
+            for g, s in sorted(rows, key=lambda gs: -key(gs[1]))[:n]:
+                print(f"  {clip_name(g)}  {g['scorer']} {g['clock']}  {label(s)}")
+
+        met = [(g, s) for g, s in results if s["met"]]
+        print(f"touches meeting the player: {sum(len(s['met']) for _, s in met)} players moved onto a well-supported "
+              f"ball in {len(met)} clips (max {max((m for _, s in met for _, _, m in s['met']), default=0):.1f} m); "
+              f"{sum(len(s['too_far']) for _, s in results)} left flagged (more than 10 m off, not backed by the "
+              f"tracking); most changed:")
+        top(met, lambda s: max(m for _, _, m in s["met"]),
+            lambda s: ", ".join(f"{n} {m:.1f} m" for n, _, m in sorted(s["met"], key=lambda x: -x[2])[:2]))
+        moved_kick = [(g, s) for g, s in results if abs(s["kick_shift"]) > 0.3]
+        print(f"kick found from the tracking, more than 0.3 s from PFF's shot event: {len(moved_kick)} clips; most:")
+        top(moved_kick, lambda s: abs(s["kick_shift"]), lambda s: f"{s['kick_shift']:+.2f} s")
+        sped = [(g, s) for g, s in results if s["sped"]]
+        print(f"players held to a 9.5 m/s sprint: {sum(len(s['sped']) for _, s in sped)} tracks in {len(sped)} clips; most:")
+        top(sped, lambda s: max(s["sped"].values()),
+            lambda s: ", ".join(f"{n} {m:.1f} m" for n, m in sorted(s["sped"].items(), key=lambda x: -x[1])[:2]))
         print("accuracy report (clips flagged / findings per check):")
         for check in CHECKS:
             hits = [(g, s["accuracy"][check]) for g, s in results if s["accuracy"][check]]

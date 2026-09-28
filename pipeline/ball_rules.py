@@ -143,6 +143,52 @@ def fly(ball, times, a, b, z_range=FOOT_Z, fixed_end=False):
     return "straight"
 
 
+MAX_CONNECT_MPS = 42.0  # no kick is faster: two touches that need more can't both be right
+# Which touch to drop when two can't both be right: least trusted first.
+TRUST = lambda c: 3 if c.get("sb") else 0 if c.get("s") == 2 else 1 if c.get("s") == 1 else 2
+
+
+def _connectable(ball, times, contacts, carries, end, inside, keep, dirty, counts):
+    """Drop touches no kick could reach from the touch before (the less trusted
+    of the pair: an added touch, then a dribble push, then PFF, then
+    StatsBomb; never the shot or a restart). Before the first touch, the ball
+    arrives at a believable speed along the tracked direction. In place on
+    `dirty`; returns (contacts, ball)."""
+    ball = list(ball)
+    while True:
+        bounds = sorted({c["f"] for c in contacts if c["f"] <= end and c["f"] not in inside and ball[c["f"]] is not None})
+        bad = None
+        for a, b in zip(bounds, bounds[1:]):
+            if any(ca <= a and b <= cb for ca, cb, _ in carries):
+                continue
+            dt = times[b] - times[a]
+            if dt <= 0 or math.dist(ball[a][:2], ball[b][:2]) / dt > MAX_CONNECT_MPS:
+                bad = (a, b)
+                break
+        if bad is None:
+            break
+        at = {f: [c for c in contacts if c["f"] == f] for f in bad}
+        choices = [f for f in bad if f not in keep]
+        if not choices:
+            break
+        drop = min(choices, key=lambda f: (max(TRUST(c) for c in at[f]), -f))
+        contacts = [c for c in contacts if c["f"] != drop]
+        dirty.update(bad)
+        counts["unconnectable"] += 1
+    first = min((c["f"] for c in contacts if ball[c["f"]] is not None), default=None)
+    if first and ball[0] is not None:
+        d = math.dist(ball[0][:2], ball[first][:2])
+        if times[first] > times[0] and d / (times[first] - times[0]) > MAX_CONNECT_MPS:
+            ux, uy = (ball[0][0] - ball[first][0]) / d, (ball[0][1] - ball[first][1]) / d
+            for k in range(first):
+                back = min(d, ARRIVE_MPS * (times[first] - times[k]))
+                ball[k] = (ball[first][0] + ux * back, ball[first][1] + uy * back, ball[first][2])
+    return contacts, ball
+
+
+ARRIVE_MPS = 15.0
+
+
 def shot_contact(contacts, goal, goal_index, window=12):
     """The scorer's touch that is the shot (the last one by him up to the goal
     frame, at most `window` frames before it), or None."""
@@ -153,27 +199,42 @@ def shot_contact(contacts, goal, goal_index, window=12):
 KICK_LOOKBACK_S = 1.0
 KICK_NEAR_M = 1.5
 KICK_MAX_M = 3.0
+KICK_LEAVE_S = 0.2
+KICK_LEAVE_MPS = 8.0
 
 
-def find_kick(ball, times, player_frames, shooter, frame, part="F"):
-    """The frame the shot really left the shooter: PFF often logs it late, when
-    the tracked ball is already metres toward goal (or at the keeper). Looking
-    back up to KICK_LOOKBACK_S from the logged frame: the last frame with the
-    ball within KICK_NEAR_M of him (and at a height he can play), else the
-    nearest one if within KICK_MAX_M, else the logged frame."""
+def find_kick(ball, times, player_frames, shooter, frame, part="F", side=None):
+    """The frame the shot really leaves the shooter. PFF logs it late (the
+    tracked ball already metres toward goal) or early (the ball still dropping
+    to him). Within KICK_LOOKBACK_S either side of the logged frame: the last
+    frame with the ball within KICK_NEAR_M of him from which it then leaves at
+    KICK_LEAVE_MPS or more (toward the goal at x = side * 52.5, if given).
+    Failing that, looking back only: the last frame within KICK_NEAR_M, else
+    the nearest within KICK_MAX_M, else the logged frame."""
     lo, hi = part_z(part)
-    near = []
-    for k in range(frame, -1, -1):
-        if times[frame] - times[k] > KICK_LOOKBACK_S:
-            break
+
+    def near(k):
         b, p = ball[k], player_frames[k].get(shooter)
         if b is None or p is None or not lo - 0.3 <= b[2] <= hi + 0.3:
-            continue
-        near.append((math.hypot(b[0] - p[0], b[1] - p[1]), k))
-    close = [k for d, k in near if d <= KICK_NEAR_M]
+            return None
+        return math.hypot(b[0] - p[0], b[1] - p[1])
+
+    def leaves(k):
+        j = next((j for j in range(k + 1, len(ball)) if times[j] - times[k] >= KICK_LEAVE_S), None)
+        if j is None or ball[j] is None or ball[k] is None:
+            return False
+        fast = math.dist(ball[k][:2], ball[j][:2]) / (times[j] - times[k]) >= KICK_LEAVE_MPS
+        return fast and (side is None or side * (ball[j][0] - ball[k][0]) > 0)
+
+    window = [k for k in range(len(ball)) if abs(times[k] - times[frame]) <= KICK_LOOKBACK_S]
+    kicks = [k for k in window if (near(k) or math.inf) <= KICK_NEAR_M and leaves(k)]
+    if kicks:
+        return max(kicks)
+    back = [(near(k), k) for k in window if k <= frame and near(k) is not None]
+    close = [k for d, k in back if d <= KICK_NEAR_M]
     if close:
         return max(close)
-    best = min(near, default=None)
+    best = min(back, default=None)
     return best[1] if best is not None and best[0] <= KICK_MAX_M else frame
 
 
@@ -204,6 +265,95 @@ def move_shooter(player_frames, times, pid, kick, ball_xy, toward):
         x, y = frame[pid]
         frame[pid] = (x + off[0] * w, y + off[1] * w)
     return gap
+
+
+MEET_M = 1.2  # at a touch the ball is at most this far from the player's centre
+MEET_EASE_S = 0.5
+MEET_CATCHUP_MPS = 3.0  # moved onto the ball no faster than this on top of his own run
+MEET_MAX_M = 10.0  # a player this far from a well-supported ball is the data being wrong: flagged, not moved
+GOAL_AREA_X, GOAL_AREA_Y = 52.5 - 3.0, 10.0  # near the goal line: the ball's position there is well supported
+
+
+def ease_player_to(player_frames, times, pid, f, spot, ease_s=MEET_EASE_S, catchup=MEET_CATCHUP_MPS):
+    """Put a player's centre at `spot` at frame f, blending in before and out
+    after over at least ease_s (longer if he'd gain more than `catchup` m/s on
+    his own run). In place; returns metres moved."""
+    p = player_frames[f][pid]
+    off = (spot[0] - p[0], spot[1] - p[1])
+    gap = math.hypot(*off)
+    ease = max(ease_s, gap / catchup)
+    for k, frame in enumerate(player_frames):
+        if pid not in frame:
+            continue
+        u = 1 - abs(times[k] - times[f]) / ease
+        if u <= 0:
+            continue
+        w = u * u * (3 - 2 * u)
+        x, y = frame[pid]
+        frame[pid] = (x + off[0] * w, y + off[1] * w)
+    return gap
+
+
+def meet_touches(ball, times, player_frames, contacts, end, skip=()):
+    """Every touch up to frame `end` has the player at the ball. Where the
+    ball's position is well supported (a StatsBomb touch, or near the goal
+    line) and he's more than MEET_M from it, the player is moved onto it
+    (ease_player_to); the rest are left for the touch rule, which moves the
+    ball. Players more than MEET_MAX_M off are left (and flagged) unless the
+    tracked ball is there too ("tr": StatsBomb and the tracking agree). In place on
+    player_frames; returns [(contact, metres moved)] and the skipped far ones."""
+    moved, too_far = [], []
+    for _ in range(2):  # moves near each other nudge earlier touches: settle them
+        for c in contacts:
+            f, pid = c["f"], c["p"]
+            b, p = ball[f] if f <= end else None, player_frames[f].get(pid)
+            if b is None or p is None or f in skip:
+                continue
+            d = math.hypot(b[0] - p[0], b[1] - p[1])
+            near_line = abs(b[0]) >= GOAL_AREA_X and abs(b[1]) <= GOAL_AREA_Y
+            if d <= MEET_M or not (c.get("sb") or near_line):
+                continue
+            if d > MEET_MAX_M and not c.get("tr"):  # beyond it only if the tracked ball backs StatsBomb
+                if c not in too_far:
+                    too_far.append(c)
+                continue
+            # His centre just behind the ball, on the side he's coming from.
+            spot = (b[0] - (b[0] - p[0]) / d * FOOT_M, b[1] - (b[1] - p[1]) / d * FOOT_M)
+            moved.append((c, ease_player_to(player_frames, times, pid, f, spot)))
+    return moved, too_far
+
+
+PLAYER_TOP_MPS = 9.5  # no player runs faster (the report flags 10.5 over 0.2 s)
+
+
+def limit_player_speeds(player_frames, times, fixed, top=PLAYER_TOP_MPS):
+    """Hold every player's track to `top` m/s, easing forward then backward in
+    time; his frames in fixed[pid] (touches) stay exactly where they are. In
+    place; returns {player id: largest shift (m)}."""
+    shifts = {}
+    pids = {pid for frame in player_frames for pid in frame}
+    for pid in pids:
+        track = [frame.get(pid) for frame in player_frames]
+        if any(p is None for p in track):
+            continue
+        out = list(track)
+        keep = fixed.get(pid, set())
+        for rng in (range(1, len(out)), range(len(out) - 2, -1, -1)):
+            for k in rng:
+                if k in keep:
+                    continue
+                j = k - 1 if rng.step == 1 else k + 1
+                step = top * abs(times[k] - times[j])
+                dx, dy = out[k][0] - out[j][0], out[k][1] - out[j][1]
+                d = math.hypot(dx, dy)
+                if d > step:
+                    out[k] = (out[j][0] + dx / d * step, out[j][1] + dy / d * step)
+        worst = max(math.dist(a, b) for a, b in zip(track, out))
+        if worst > 0.01:
+            shifts[pid] = worst
+            for k, xy in enumerate(out):
+                player_frames[k][pid] = xy
+    return shifts
 
 
 def _crossing(ball, times, start, side):
@@ -322,17 +472,22 @@ def fly_shot(ball, times, player_frames, kick, shooter, part, side, penalty=Fals
             out[k] = old[min(k_cross + (k - k_new), len(old) - 1)]
     info["shot"] = True
     info["speed"] = length / want if want > 0 else None
+    info["line_frame"] = k_new  # first frame at (or over) the line: where a clearance turns it
     return out, info
 
 
-def enforce_touch_rule(ball, times, player_frames, contacts, carries, goal_index, keepers, moved=()):
+def enforce_touch_rule(ball, times, player_frames, contacts, carries, goal_index, keepers, moved=(), keep=(),
+                       leave=()):
     """Fix every rule break before the shot (goal_index: the frame the shot is
     kicked, whose ball stays put). keepers: {player id: +1/-1, the goal he
     defends}. moved: touch frames whose ball was moved (the shot, put at his
-    foot): the ball is re-drawn to meet it. Returns (ball, contacts, counts)."""
+    foot): the ball is re-drawn to meet it. keep: touch frames never dropped
+    (restarts). leave: touches whose ball stays where it is though the player
+    is far (a well-supported ball, meet_touches). Returns (ball, contacts, counts)."""
     out = list(ball)
     contacts = [dict(c) for c in contacts]
-    counts = {"moved_to_foot": 0, "touches_added": 0, "joined": 0, "straight": 0}
+    counts = {"moved_to_foot": 0, "touches_added": 0, "joined": 0, "straight": 0, "unconnectable": 0}
+    keep_frames = set(keep) | {goal_index}
     inside = set()
     for a, b, _ in carries:
         inside.update(range(a + 1, b))
@@ -345,25 +500,30 @@ def enforce_touch_rule(ball, times, player_frames, contacts, carries, goal_index
             continue
         p = player_frames[f][c["p"]]
         lo, hi = part_z(c["b"])
-        if math.hypot(out[f][0] - p[0], out[f][1] - p[1]) > REACH_M - 0.05 or not lo <= out[f][2] <= hi:
+        if c in leave:
+            continue
+        if math.hypot(out[f][0] - p[0], out[f][1] - p[1]) > MEET_M - 0.05 or not lo <= out[f][2] <= hi:
             out[f] = touch_spot(p, out[f], c["b"])
             dirty.add(f)
             counts["moved_to_foot"] += 1
 
     # 3. Between touches. Checked on the ball as the clip stores it (2 decimals).
     for _ in range(4):
+        contacts, out = _connectable(out, times, contacts, carries, goal_index, inside, keep_frames, dirty, counts)
         out = [tuple(round(v, 2) for v in b) if b is not None else None for b in out]
         bounds = sorted({0, goal_index} | {c["f"] for c in contacts if c["f"] <= goal_index}
                         | {x for a, b, _ in carries for x in (a, b) if b <= goal_index})
         bounds = [f for f in bounds if f not in inside]
         bad = violations(out, times, contacts, player_frames, goal_index, carries, end=goal_index)
+        # A jump into a touch frame: re-fly the stretches either side of it.
+        dirty |= {f for f, kind in bad if kind == "jump"} | {f - 1 for f, kind in bad if kind == "jump"}
         bad = [f for f, kind in bad if kind != "far touch"]
         stretches = []
         for a, b in zip(bounds, bounds[1:]):
             if (a in inside or b - a < 2 or out[a] is None or out[b] is None
                     or any(ca <= a and b <= cb for ca, cb, _ in carries)):  # a carry or dead ball: left as it is
                 continue
-            if any(a < f < b for f in bad) or a in dirty or b in dirty:
+            if any(a < f < b for f in bad) or any(a < f <= b for f in dirty) or a in dirty:
                 stretches.append((a, b, [f for f in bad if a < f < b]))
         if not stretches:
             break
@@ -387,6 +547,10 @@ def enforce_touch_rule(ball, times, player_frames, contacts, carries, goal_index
                 _, k, pid = best
                 if any(abs(k - f) < 2 * WINDOW for f in added):
                     continue
+                spot = touch_spot(player_frames[k][pid], out[k], _part(out[k][2], pid, player_frames[k], keepers))
+                if any(times[e] != times[k] and math.dist(out[e][:2], spot[:2]) / abs(times[e] - times[k]) > MAX_CONNECT_MPS
+                       for e in (a, b)):
+                    continue  # no kick could get the ball to him and on in time
                 part = _part(out[k][2], pid, player_frames[k], keepers)
                 out[k] = touch_spot(player_frames[k][pid], out[k], part)
                 contacts.append({"f": k, "p": pid, "b": part, "s": 2})
