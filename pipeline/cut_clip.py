@@ -618,6 +618,10 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
                                         lambda f: next((c["f"] for c in reversed(contacts) if c["f"] < f), None),
                                         goal_index)
     dead_ball = {k: ball[k] for a, b in dead for k in range(a, b + 1)}
+    if restart_info:  # the keeper rules again, against the ball where the restarts put it
+        more = place_keepers(player_frames, times, ball, [pid for pid, p in players.items() if p["position"] == "GK"],
+                             goal_index, logged, skip={keeper} if penalty else set())
+        keeper_moves = {pid: max(m, more.get(pid, 0.0)) for pid, m in keeper_moves.items()}
     contacts = [c for c in contacts if not any(a < c["f"] <= b for a, b in dead)
                 and not any(c["p"] == r["p"] and abs(c["f"] - r["f"]) <= 12 for r in restarts)]
     contacts = sorted(contacts + [{"f": r["f"], "p": r["p"], "b": r["b"]} | ({"sb": "Pass"} if r.get("timed") else {})

@@ -11,8 +11,11 @@ any is flagged and goes on the review list:
   touch by that player within MATCH_S.
 - "crossing off": the shot crosses more than CROSS_M from StatsBomb's point.
 - "sprint": a player moves faster than SPRINT_MPS (over SPRINT_WINDOW frames).
-- "keeper wide": before the kick, a keeper in his own box and outside his
-  posts (by more than POST_MARGIN_M) while the ball is in that box.
+- "keeper wide": before the kick, a keeper in his own box, outside his
+  posts, with the ball in that box, and either more than WIDE_M from
+  StatsBomb's freeze-frame spot and wider than it (the defending keeper,
+  within FREEZE_WINDOW_S of the kick) or more than WIDE_M outside the post line on
+  the side away from the ball. (Keepers narrow the angle.)
 - "shot spot": the ball at the kick more than SHOT_SPOT_M from where
   StatsBomb has the shot taken.
 - "body pass": the ball goes through a player with no touch by him then
@@ -34,6 +37,8 @@ SPRINT_MPS = 10.5  # the fastest footballers top out around 10 m/s
 SPRINT_WINDOW = 6  # frames (0.2 s): single-frame speeds are tracking noise
 HALF_L, POST_Y, AREA_X, AREA_Y = 52.5, 3.66, 52.5 - 16.5, 20.16
 POST_MARGIN_M = 0.3
+WIDE_M = 2.0  # off StatsBomb's freeze-frame spot, or beyond the post away from the ball, by more than this
+FREEZE_WINDOW_S = 1.0  # the freeze frame speaks for this long before the kick
 SHOT_SPOT_M = 2.0
 
 
@@ -171,6 +176,8 @@ def check_clip(clip, statsbomb=(), placement=None):
         if worst > SPRINT_MPS:
             found["sprint"].append(f"{names[pid]} {worst:.1f} m/s")
 
+    freeze = tuple(placement["keeper"]) if placement and placement.get("keeper") else None
+    freeze_from = next((k for k in range(kick, -1, -1) if times[kick] - times[k] > FREEZE_WINDOW_S), 0)
     for p in clip["players"]:
         if p["position"] != "GK":
             continue
@@ -181,7 +188,14 @@ def check_clip(clip, statsbomb=(), placement=None):
                 continue
             s = 1 if q[0] >= 0 else -1
             in_box = lambda xy: s * xy[0] >= AREA_X and abs(xy[1]) <= AREA_Y
-            if in_box(q) and in_box(b) and abs(q[1]) > POST_Y + POST_MARGIN_M:
+            if not (in_box(q) and in_box(b) and abs(q[1]) > POST_Y + POST_MARGIN_M):
+                continue
+            # Keepers narrow the angle. Near the kick, StatsBomb's freeze frame says
+            # where he was; otherwise only well outside the post away from the ball.
+            if freeze is not None and p["id"] == keeper and k >= freeze_from:
+                if math.dist(q, freeze) > WIDE_M and abs(q[1]) > abs(freeze[1]):  # wider than StatsBomb has him
+                    frames.append(k)
+            elif abs(q[1]) > POST_Y + WIDE_M and (q[1] > 0) != (b[1] > 0):
                 frames.append(k)
         if frames:
             found["keeper wide"].append(f"{p['name']} {len(frames)} frames from {frames[0]}")
