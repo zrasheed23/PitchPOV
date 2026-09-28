@@ -24,6 +24,7 @@ from pathlib import Path
 from cut_clip import (BALL_SOURCES, OVERRIDES, RAW, RAW_BALL_MAX_M, SHOT_PLACEMENT, build_clip, load_match,
                       load_overrides, load_shot_placement, read_windows, write_clip)
 from goals import build_index, clip_name, find_goals
+from accuracy import CHECKS
 from restarts import KINDS
 
 CLIPS = Path("clips")
@@ -94,6 +95,9 @@ def review_reasons(stats):
     if stats.get("rule_breaks"):
         kinds = Counter(k for _, k in stats["rule_breaks"])
         reasons.append("ball changes course with no touch: " + ", ".join(f"{n} {k}" for k, n in sorted(kinds.items())))
+    flagged = [c for c, found in (stats.get("accuracy") or {}).items() if found]
+    if flagged:
+        reasons.append("accuracy: " + ", ".join(flagged))
     if (stats.get("override") or {}).get("reviewed"):
         return reasons
     if stats.get("max_ball_speed", 0) > FAST_BALL_MPS:
@@ -277,6 +281,16 @@ def report(matches, results, problems, skipped, n_games):
                       f"toucher within 3 m {s['toucher_near'][0]}/{s['toucher_near'][1]}")
         ok, n = (sum(s["toucher_near"][k] for _, s in results if not s["swapped"]) for k in (0, 1))
         print(f"logged toucher within 3 m of the ball, other clips: {ok}/{n} ({100 * ok / max(n, 1):.0f}%)")
+        print("accuracy report (clips flagged / findings per check):")
+        for check in CHECKS:
+            hits = [(g, s["accuracy"][check]) for g, s in results if s["accuracy"][check]]
+            print(f"  {check:18} {len(hits):3} clips, {sum(len(f) for _, f in hits):4} findings")
+        flagged = [(g, s) for g, s in results if any(s["accuracy"].values())]
+        print(f"  clips flagged by any check: {len(flagged)} of {len(results)}")
+        for g, s in flagged:
+            print(f"    {clip_name(g)}  {g['scorer']} {g['clock']}: "
+                  + "; ".join(f"{c}: {f[0]}" + (f" (+{len(f) - 1})" if len(f) > 1 else "")
+                              for c, f in s["accuracy"].items() if f))
         review = [(g, review_reasons(s)) for g, s in results if review_reasons(s)]
         print(f"review list (needsReview, shift > {BIG_SHIFT_M:.0f} m, or raw at "
               f"{REVIEW_RAW_M:.0f}-{RAW_BALL_MAX_M:.0f} m): {len(review)}")

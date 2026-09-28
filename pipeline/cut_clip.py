@@ -14,6 +14,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from goal_mouth import correct_goal_mouth, goal_side
+from accuracy import check_clip
 from ball_flight import anchor_frames, count_kinks, straighten_free_flight
 from ball_physics import apply_physics
 from ball_rules import enforce_touch_rule, find_kick, fly_shot, shot_contact
@@ -25,6 +26,7 @@ from keepers import defending_keeper, ease_to_freeze_frame, place_keepers, plan_
 from net import across_the_line
 from penalty import find_keeper, pin_ball, place_players
 from restarts import apply_restarts, find_restarts, redraw_roll_out
+from statsbomb import clip_events, match_events
 from touch_rule import violations
 from volleys import shot_pose
 import relabel
@@ -681,6 +683,7 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         "contacts": contacts,  # "s": 1 marks a touch added for a dribble
         "carries": carries,  # [first, last, player id]: dribbles the viewer holds at the player's feet
         "restarts": restart_info,  # throw-ins, corners, goal kicks, free kicks: see restarts.py
+        "cleared": cleared_after is not None,  # a goal-line clearance: the ball comes back out
         "kickFrame": shot["f"],  # the frame the shot leaves his foot (goalFrame is PFF's shot event)
         "keeperDive": dive,  # how the keeper reacts to the shot: see keepers.plan_dive
         "needsReview": correction["needs_review"],
@@ -688,6 +691,9 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         "players": list(players.values()),
         "frames": out_frames,
     }
+    # StatsBomb's events in this clip, and the accuracy report on the clip as written (accuracy.py).
+    sb_clip, sb_shift = clip_statsbomb(meta, roster, events, frame_ms, players, contacts, goal, side)
+    accuracy = check_clip(clip, sb_clip, placement)
     stats = {
         "frames": len(out_frames),
         "missing_ball": missing_ball,
@@ -709,6 +715,8 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         "shot": shot_info,
         "cleared": cleared_after is not None,
         "line_change": line_change,
+        "accuracy": accuracy,
+        "sb_shift": sb_shift,
         "rule_before": rule_before,
         "rule_breaks": rule_breaks,
         "rule_counts": rule_counts,
@@ -729,6 +737,21 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         "swapped": votes is not None,
     }
     return clip, stats
+
+
+def clip_statsbomb(meta, roster, events, frame_ms, players, contacts, goal, side):
+    """The clip's StatsBomb events (statsbomb.clip_events) and the time shift
+    that lines them up with its logged touches; ([], 0) without StatsBomb."""
+    sb = match_events(meta, roster, events or [])
+    if not sb:
+        return [], 0.0
+    team_id = {"home": meta["homeTeam"]["id"], "away": meta["awayTeam"]["id"]}
+    pid_of = {(side_, str(r["shirtNumber"])): r["player"]["id"] for side_, tid in team_id.items()
+              for r in roster if r["team"]["id"] == tid}
+    scoring = goal["side"] if not goal["ownGoal"] else ("away" if goal["side"] == "home" else "home")
+    attack = {scoring: side, ("away" if scoring == "home" else "home"): -side}
+    return clip_events(sb, frame_ms, lambda s_, n: pid_of.get((s_, n)) if pid_of.get((s_, n)) in players else None,
+                       attack, [(c["f"], c["p"]) for c in contacts if not c.get("s")])
 
 
 def max_ball_speed(ball, times, window=3):

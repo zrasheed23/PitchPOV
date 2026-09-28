@@ -14,78 +14,27 @@ votes for, with at least MIN_SHARE of its votes; the rest keep label_pairing.
 Calibrated on Morocco v Spain's normal time (labels there are right): a slot
 that passes this test has the right name 95% of the time.
 
-StatsBomb times run from each period's start; PFF's from the start of the
-video. The offset per period is the median gap between the same player's
-touches in both feeds at about the same game clock.
-
-Data: StatsBomb Open Data (data/statsbomb, cached by shot_placement.py; fetch
-lineups with curl if missing).
+StatsBomb events come from statsbomb.py, on PFF's clock.
 """
 
-import json
 import math
 from collections import Counter, defaultdict
-from functools import lru_cache
-from pathlib import Path
 
-CACHE = Path("data/statsbomb")
-COMPETITION, SEASON = 43, 106
+from statsbomb import match_events
+
 VOTE_M = 5.0
 MIN_VOTES = 2
 MIN_SHARE = 0.6
-CLOCK_MATCH_S = 5  # same player, game clocks this close: the same touch in both feeds
-TOUCHES = {"PA", "SH", "CR", "CL", "RE", "TC", "IT"}
-
-
-def _ts(stamp):
-    h, m, s = stamp.split(":")
-    return int(h) * 3600 + int(m) * 60 + float(s)
-
-
-@lru_cache(maxsize=None)
-def _statsbomb_match(home, away):
-    path = CACHE / "matches" / str(COMPETITION) / f"{SEASON}.json"
-    if not path.exists():
-        return None
-    for m in json.loads(path.read_text()):
-        if {m["home_team"]["home_team_name"], m["away_team"]["away_team_name"]} == {home, away}:
-            return m["match_id"]
-    return None
 
 
 def statsbomb_events(meta, roster, events):
-    """[(period, video time s, (side, shirt number), (x, y) in StatsBomb yards,
-    the team attacking +x)] for every StatsBomb event with a player and a
-    location, or None if the match isn't in the cache."""
-    sides = {"home": meta["homeTeam"], "away": meta["awayTeam"]}
-    sb_id = _statsbomb_match(sides["home"]["name"], sides["away"]["name"])
-    ev_path, lu_path = CACHE / "events" / f"{sb_id}.json", CACHE / "lineups" / f"{sb_id}.json"
-    if sb_id is None or not ev_path.exists() or not lu_path.exists():
+    """[(period, video time s, (side, shirt number), (x, y) in StatsBomb units)]
+    for every StatsBomb event with a player and a location (statsbomb.py), or
+    None if the match isn't in the cache."""
+    sb = match_events(meta, roster, events)
+    if sb is None:
         return None
-    side_of = {t["name"]: s for s, t in sides.items()}
-    number = {p["player_id"]: (side_of[t["team_name"]], str(p["jersey_number"]))
-              for t in json.loads(lu_path.read_text()) if t["team_name"] in side_of for p in t["lineup"]}
-    sb = [(e["period"], _ts(e["timestamp"]), e["minute"] * 60 + e["second"], number[e["player"]["id"]], e["location"])
-          for e in json.loads(ev_path.read_text())
-          if e["period"] <= 4 and "player" in e and "location" in e and e["player"]["id"] in number]
-    shirt = {r["player"]["id"]: ("home" if r["team"]["id"] == sides["home"]["id"] else "away", str(r["shirtNumber"]))
-             for r in roster}
-    by_who = defaultdict(list)
-    for p, t, clock, who, _ in sb:
-        by_who[(p, who)].append((clock, t))
-    gaps = defaultdict(list)
-    for e in events:
-        g = e.get("gameEvents") or {}
-        if ((e.get("possessionEvents") or {}).get("possessionEventType") not in TOUCHES or e.get("eventTime") is None
-                or g.get("startGameClock") is None or str(g.get("playerId")) not in shirt):
-            continue
-        p = g["period"]
-        near = [e["eventTime"] - t for clock, t in by_who[(p, shirt[str(g["playerId"])])]
-                if abs(clock - g["startGameClock"]) <= CLOCK_MATCH_S]
-        if len(near) == 1:
-            gaps[p].append(near[0])
-    offset = {p: sorted(d)[len(d) // 2] for p, d in gaps.items() if d}
-    return [(p, t + offset[p], who, loc) for p, t, _, who, loc in sb if p in offset]
+    return [(e["period"], e["t"], (e["side"], e["number"]), e["loc"]) for e in sb]
 
 
 def window_votes(sb, period, times, lists_at, length, width):
