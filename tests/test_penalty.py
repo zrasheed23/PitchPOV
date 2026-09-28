@@ -40,7 +40,7 @@ def test_nearest_legal(side):
 def setup(side=1):
     """Taker 3 m behind the spot, keeper 2 m off his line, a defender in the
     area, one standing on the spot and one walking along the edge of the arc."""
-    n = 150
+    n = 240  # 6 s after the kick: the blend back is over (a ~10 m move takes ~3.9 s)
     times = [i / FPS for i in range(n)]
     frames = []
     for i in range(n):

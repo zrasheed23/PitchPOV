@@ -68,3 +68,18 @@ def test_the_carrier_is_smoothed_only_around_the_dribble():
     assert wobble(players, 30, 60) < wobble(before, 30, 60) * 0.3
     assert players[5] == before[5] and players[85] == before[85]
     assert all(players[i]["B"] == before[i]["B"] for i in range(91))
+
+
+def test_a_statsbomb_carrier_trailing_the_ball_is_eased_onto_it():
+    from dribble import FOLLOW_M, follow_carries
+    times = [k / 30 for k in range(200)]
+    ball = [(20.0 + 0.2 * k, 0.0, 0.0) for k in range(200)]  # 6 m/s along the ground
+    frames = [{"r": (20.0 + 0.2 * k - 6.0, 0.0)} for k in range(200)]  # PFF has him 6 m behind it
+    carry = {"type": "Carry", "p": "r", "f": 100, "xy": (40.0, 0.0), "raw": {"duration": 2.0}}
+    moved = follow_carries(ball, [True] * 200, times, frames, [carry], 190)
+    assert moved and moved[0][2] > 4.5
+    assert all(math.dist(frames[k]["r"], ball[k][:2]) <= FOLLOW_M + 0.3 for k in range(115, 150))
+    assert frames[5]["r"] == (20.0 + 0.2 * 5 - 6.0, 0.0)  # well before (the 5 m eases on over 2.7 s): as tracked
+    # Not backed by the tracked ball at its start: left alone.
+    frames = [{"r": (20.0 + 0.2 * k - 6.0, 0.0)} for k in range(200)]
+    assert not follow_carries(ball, [True] * 200, times, frames, [dict(carry, xy=(10.0, 20.0))], 190)

@@ -83,7 +83,15 @@ def test_a_shooter_far_from_the_ball_is_moved_onto_it():
     out, info = fly_shot(ball, TIMES, players, 0, "s", "R", 1)
     assert info["shooter_moved"] > 10
     assert math.dist(players[0]["s"], out[0][:2]) < 0.5
-    assert players[119]["s"] == (30.0, 10.0)  # eased back onto his track afterwards
+    # Eased back toward his track afterwards, never accelerating harder than EASE_ACCEL
+    # (his track stands still, so all his motion is the correction).
+    from ball_rules import EASE_ACCEL
+    assert math.dist(players[119]["s"], (30.0, 10.0)) < math.dist(players[60]["s"], (30.0, 10.0))
+    dt = TIMES[1] - TIMES[0]
+    acc = max(math.dist((2 * players[k]["s"][0] - players[k - 1]["s"][0] - players[k + 1]["s"][0],
+                         2 * players[k]["s"][1] - players[k - 1]["s"][1] - players[k + 1]["s"][1]), (0, 0)) / dt ** 2
+              for k in range(1, 119) if k != 0)
+    assert acc <= EASE_ACCEL * 1.05
 
 
 def test_a_mixed_up_identity_is_swapped_not_teleported():
@@ -105,3 +113,30 @@ def test_no_swap_when_statsbomb_fits_the_tracks_as_they_are():
     events = [{"f": 10, "p": "a", "xy": (0.0, 20.0)}, {"f": 90, "p": "a", "xy": (0.0, 20.0)},
               {"f": 30, "p": "b", "xy": (15.0, 0.0)}, {"f": 70, "p": "b", "xy": (15.0, 0.0)}]
     assert try_swap(frames, players, "a", 50, (15.0, 0.0), events) is None
+
+
+def test_after_the_goal_a_correction_fades_instead_of_snapping_back():
+    from ball_rules import SETTLE_MPS, settle_after_goal
+    times = [k / 30 for k in range(120)]
+    reference = [{"gk": (51.0, 3.0)} for _ in times]
+    # Held 3 m off his track until frame 60, then (as a correction ending would) straight back on it.
+    frames = [{"gk": (51.0, 0.0) if k < 60 else (51.0, 3.0)} for k in range(120)]
+    settle_after_goal(frames, reference, times, 30, hold={"gk": 59})
+    ys = [f["gk"][1] for f in frames]
+    speeds = [abs(b - a) / (1 / 30) for a, b in zip(ys, ys[1:])]
+    assert ys[59] == 0.0 and ys[119] < 3.0
+    assert speeds[59] < 0.1  # held still, he sets off gently (SETTLE_RAMP_S)
+    assert max(speeds) <= 2.5 * SETTLE_MPS
+
+
+def test_a_player_the_tracked_ball_shows_to_be_elsewhere_never_pulls_the_ball_to_him():
+    from ball_rules import meet_touches
+    times = [k / 30 for k in range(100)]
+    ball = [(-43.0, -15.0, 0.0)] * 100
+    frames = [{"a": (6.0, 7.0)} for _ in times]  # PFF has him 50 m away all clip
+    tracked = {"f": 20, "p": "a", "b": "F", "sb": "Ball Receipt*", "tr": 1}
+    placed = {"f": 70, "p": "a", "b": "R", "sb": "Pass"}  # only StatsBomb puts the ball here
+    _, too_far, _ = meet_touches(ball, times, frames, [placed, tracked], 99)
+    assert placed in too_far and tracked in too_far
+    _, too_far, _ = meet_touches(ball, times, frames, [placed], 99)
+    assert not too_far  # on its own, the touch rule may still take the ball to him

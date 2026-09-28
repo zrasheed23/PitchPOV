@@ -55,7 +55,9 @@ def test_the_keeper_is_on_the_statsbomb_spot_at_the_kick_and_holds_it():
     gap = ease_to_freeze_frame(frames, TIMES, "gk", 150, (48.0, 2.0))
     assert math.isclose(gap, math.hypot(2, 2))
     assert frames[150]["gk"] == (48.0, 2.0) and frames[180]["gk"] == (48.0, 2.0)
-    assert frames[100]["gk"] == (50.0, 0.0)  # 1.7 s before: still on his track
+    # A 2.8 m move eases in over sqrt(6 * 2.8 / 4) = 2.1 s, so he accelerates no harder than 4 m/s^2.
+    assert frames[80]["gk"] == (50.0, 0.0)  # 2.3 s before: still on his track
+    assert frames[100]["gk"] != (50.0, 0.0)  # 1.7 s before: on his way
     assert frames[299]["gk"] == (50.0, 0.0)  # and back on it afterwards
 
 
@@ -101,3 +103,14 @@ def test_a_close_shot_beats_the_keeper_it_does_not_go_through_him():
     low = [(40.0, 0.05, 0.11)] * 151 + [(40.0 + 0.5 * k, 0.05, 0.11) for k in range(1, 150)]
     frames = [{"gk": (50.0, 0.0)} for _ in TIMES]
     assert beat_keeper(plan_dive(low, TIMES, frames, "gk", 150, 1), frames, TIMES, 150, None, low)["through"] == "legs"
+
+
+def test_a_beaten_keeper_steps_clear_of_the_shot_hands_included_toward_where_pff_had_him():
+    from keepers import HANDS_M, beat_keeper
+    # The shot passes straight through StatsBomb's spot for him at chest height.
+    ball = [(40.0 + 0.6 * k, 0.0, 1.2) for k in range(30)] + [(58.0, 0.0, 1.2)] * 270
+    frames = [{"gk": (47.0, 0.0)} for _ in TIMES]
+    dive = {"keeper": "gk", "kind": "block", "height": 1.2, "gap": 0.0, "dir": 1, "arrive_f": 12, "f": 8}
+    out = beat_keeper(dive, frames, TIMES, 0, (47.0, 0.0), ball, tracked_spot=(51.0, -2.5))
+    assert out["gap"] >= HANDS_M + 0.11 + 0.09 and frames[12]["gk"][1] < 0  # stepped to PFF's side
+    assert out["dir"] == 1  # the ball now passes on his +y side

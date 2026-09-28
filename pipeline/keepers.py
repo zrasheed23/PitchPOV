@@ -44,6 +44,7 @@ HANDS_CLEAR_M = 0.1
 DIVE_FULL_S = 0.4  # take-off to full stretch
 REACH_M = 2.5
 BLOCK_M = 0.9
+EASE_ACCEL = 4.0  # as ball_rules.EASE_ACCEL: corrections ease in no harder than this (m/s^2)
 
 
 def goals_of(player_frames, keepers):
@@ -130,8 +131,36 @@ def _limit(offsets, times, max_mps, fixed=()):
     return out
 
 
+SMOOTH_S = 0.4  # a keeper correction is smoothed over this (sigma), so he doesn't lurch as it changes
+
+
+def _smooth(offsets, times, fixed=()):
+    """Gaussian-smoothed offsets (sigma SMOOTH_S); `fixed` frames keep theirs."""
+    n = len(offsets)
+    if n < 2:
+        return list(offsets)
+    sigma = SMOOTH_S / ((times[-1] - times[0]) / (n - 1))
+    r = int(math.ceil(3 * sigma))
+    weights = [math.exp(-(j * j) / (2 * sigma * sigma)) for j in range(r + 1)]
+    out = []
+    for k in range(n):
+        if k in fixed:
+            out.append(offsets[k])
+            continue
+        sx = sy = sw = 0.0
+        for j in range(max(0, k - r), min(n, k + r + 1)):
+            w = weights[abs(j - k)]
+            sx += offsets[j][0] * w
+            sy += offsets[j][1] * w
+            sw += w
+        out.append((sx / sw, sy / sw))
+    return out
+
+
 def place_keepers(player_frames, times, ball, keepers, end, touches=(), skip=()):
-    """Correct implausible keeper positions up to `end` (the shot), in place.
+    """Correct implausible keeper positions up to `end` (the shot), in place;
+    after it the correction at `end` is held (dropping it there sent keepers
+    sprinting off at the kick; the post-goal settle fades it slowly).
     keepers: GK ids; touches: [(frame, player id)] logged touches; skip: keepers
     to leave alone (a penalty's). Returns {keeper id: largest correction (m)}."""
     moved = {}
@@ -157,7 +186,11 @@ def place_keepers(player_frames, times, ball, keepers, end, touches=(), skip=())
             b = ball_at[k]
             q = plausible_spot(p, b[:2] if b is not None else None, side)
             offsets.append((q[0] - p[0], q[1] - p[1]))
+        last = min(end, len(track) - 1)
+        for k in range(last + 1, len(track)):
+            offsets[k] = offsets[last]  # held after the shot
         fixed = keep | {k for k in range(len(track)) if k > end}
+        offsets = _smooth(offsets, times, fixed)
         offsets = _limit(offsets, times, SPRINT_MPS, fixed)
         moved[pid] = max(math.hypot(*o) for o in offsets)
         for k, (p, o) in enumerate(zip(track, offsets)):
@@ -171,7 +204,8 @@ def defending_keeper(player_frames, keepers, side):
 
 
 def ease_to_freeze_frame(player_frames, times, pid, kick, spot):
-    """Ease the keeper onto StatsBomb's spot over FREEZE_EASE_S before the kick,
+    """Ease the keeper onto StatsBomb's spot over FREEZE_EASE_S (longer for a
+    big move, so he accelerates no harder than EASE_ACCEL) before the kick,
     hold him there for DIVE_HOLD_S after it, then ease back onto his track no
     faster than SPRINT_MPS. In place; returns how far PFF had him from it."""
     p = player_frames[kick].get(pid)
@@ -179,6 +213,7 @@ def ease_to_freeze_frame(player_frames, times, pid, kick, spot):
         return None
     gap = math.dist(p, spot)
     t0 = times[kick]
+    ease_s = max(FREEZE_EASE_S, math.sqrt(6 * gap / EASE_ACCEL))  # no harder than EASE_ACCEL
     hold_end = next((k for k in range(kick, len(times)) if times[k] - t0 >= DIVE_HOLD_S), len(times) - 1)
     offsets = []
     for k, frame in enumerate(player_frames):
@@ -189,7 +224,7 @@ def ease_to_freeze_frame(player_frames, times, pid, kick, spot):
         if kick <= k <= hold_end:
             offsets.append((spot[0] - q[0], spot[1] - q[1]))
         elif k < kick:
-            u = 1 - (t0 - times[k]) / FREEZE_EASE_S
+            u = 1 - (t0 - times[k]) / ease_s
             w = 0.0 if u <= 0 else u * u * (3 - 2 * u)
             offsets.append(((spot[0] - p[0]) * w, (spot[1] - p[1]) * w))
         else:
@@ -264,20 +299,34 @@ def plan_dive(ball, times, player_frames, pid, kick, side):
 BODY_R = ((0.9, 0.18), (1.5, 0.22), (1.85, 0.12))  # legs, torso, head (as accuracy.py)
 BALL_R = 0.11
 CLEAR_M = 0.1  # the ball clears him by this much
+# A beaten keeper is never in the shot's path: from knee to head height his
+# hands (out in the ready stance, this far from his centre) must miss it too.
+HANDS_M = 0.5
+HANDS_Z = (0.6, 1.85)
+
+
+def keeper_radius(z):
+    """How far from a set keeper's centre he blocks a ball at height z: his
+    hands from knee to head height, else his body; None above his head."""
+    if HANDS_Z[0] <= z <= HANDS_Z[1]:
+        return HANDS_M
+    return next((r for top, r in BODY_R if z <= top), None)
 LEGS_Z, LEGS_GAP = 0.35, 0.12  # a ball this low and this central goes through his legs
 FREEZE_SLACK_M = 1.0  # he may stand at most this far from StatsBomb's spot to let it past
 
 
-def beat_keeper(dive, player_frames, times, kick, freeze_spot=None, ball_at=None):
+def beat_keeper(dive, player_frames, times, kick, freeze_spot=None, ball_at=None, tracked_spot=None):
     """A block the ball can't clear: through his legs if it's low and central,
     else he stands just far enough to the side (at most FREEZE_SLACK_M from
-    StatsBomb's spot, or from where he was) for it to clear him by CLEAR_M,
-    from the kick until it's past. In place; returns the plan with "through"
-    ("legs", "side", "over") and "shifted" (m)."""
+    StatsBomb's spot, or from where he was) for it to clear him, hands
+    included (keeper_radius), by CLEAR_M, from the kick until it's past. He
+    steps to the side of the shot's path where PFF tracked him (tracked_spot,
+    the other measurement of where he was), else the side he's on. In place;
+    returns the plan with "through" ("legs", "side", "over") and "shifted" (m)."""
     if not dive or dive["kind"] != "block":
         return dive
     z, gap = dive["height"], dive["gap"]
-    r = next((r for top, r in BODY_R if z <= top), None)
+    r = keeper_radius(z)
     if r is None:
         return dive | {"through": "over"}
     if z <= LEGS_Z and gap <= LEGS_GAP:
@@ -288,7 +337,8 @@ def beat_keeper(dive, player_frames, times, kick, freeze_spot=None, ball_at=None
     end = min(dive["arrive_f"] + int(round(0.6 / max(times[1] - times[0], 1e-6))), len(times) - 1)
 
     def closest():
-        """(clearance, distance, closest ball point (x, y), his position) while the ball goes past."""
+        """(clearance, distance, closest ball point (x, y), his position, the
+        ball's direction there) while the ball goes past."""
         best = None
         for k in range(kick, min(end, len(ball_at) - 1)):
             p0, p1, q = ball_at[k], ball_at[k + 1], player_frames[k][pid]
@@ -298,11 +348,11 @@ def beat_keeper(dive, player_frames, times, kick, freeze_spot=None, ball_at=None
             L = vx * vx + vy * vy
             t = 0.0 if L < 1e-9 else min(max(((q[0] - p0[0]) * vx + (q[1] - p0[1]) * vy) / L, 0.0), 1.0)
             cx, cy, cz = p0[0] + vx * t, p0[1] + vy * t, p0[2] + (p1[2] - p0[2]) * t
-            r = next((r for top, r in BODY_R if cz <= top), None)
+            r = keeper_radius(cz)
             if r is not None:
                 d = math.hypot(q[0] - cx, q[1] - cy)
                 if best is None or d - r < best[0]:
-                    best = (d - r - BALL_R, d, (cx, cy), q)
+                    best = (d - r - BALL_R, d, (cx, cy), q, (vx, vy))
         return best
 
     total = 0.0
@@ -310,7 +360,7 @@ def beat_keeper(dive, player_frames, times, kick, freeze_spot=None, ball_at=None
         best = closest()
         if best is None or best[0] >= CLEAR_M - 0.005:
             break
-        clearance, _, (cx, cy), q = best
+        clearance, _, (cx, cy), q, (vx, vy) = best
         room = FREEZE_SLACK_M - math.dist(player_frames[kick][pid], base)
         shift = min(CLEAR_M - clearance, max(room, 0.0))
         if shift <= 0.005:
@@ -318,15 +368,24 @@ def beat_keeper(dive, player_frames, times, kick, freeze_spot=None, ball_at=None
         ux, uy = q[0] - cx, q[1] - cy
         n = math.hypot(ux, uy)
         ux, uy = (ux / n, uy / n) if n > 1e-6 else (0.0, -dive["dir"])
+        vn = math.hypot(vx, vy)
+        if tracked_spot is not None and vn > 1e-9 and total == 0.0:
+            # Square to the path, toward the side PFF tracked him on (if it's clearly one side).
+            px, py = -vy / vn, vx / vn
+            lean = (tracked_spot[0] - cx) * px + (tracked_spot[1] - cy) * py
+            if abs(lean) > r + BALL_R:
+                ux, uy = (px, py) if lean > 0 else (-px, -py)
+                shift = min(CLEAR_M + r + BALL_R + ((q[0] - cx) * ux + (q[1] - cy) * uy) * -1.0, max(room, 0.0))
         for k, frame in enumerate(player_frames):
             if pid not in frame:
                 continue
+            ramp = math.sqrt(6 * shift / EASE_ACCEL)
             if kick <= k <= end:
                 w = 1.0
             elif k < kick:
-                w = max(0.0, 1 - (times[kick] - times[k]) / 0.3)
+                w = max(0.0, 1 - (times[kick] - times[k]) / max(0.3, ramp))
             else:
-                w = max(0.0, 1 - (times[k] - times[end]) / 0.5)
+                w = max(0.0, 1 - (times[k] - times[end]) / max(0.5, ramp))
             if w > 0:
                 x, y = frame[pid]
                 e = w * w * (3 - 2 * w)
@@ -334,4 +393,7 @@ def beat_keeper(dive, player_frames, times, kick, freeze_spot=None, ball_at=None
         total += shift
     best = closest()
     gap = best[1] if best else gap
-    return dive | {"through": "side", "shifted": round(total, 2), "gap": round(gap, 2)}
+    side = dive["dir"]
+    if best is not None and abs(best[2][1] - best[3][1]) > 1e-6:
+        side = 1 if best[2][1] > best[3][1] else -1  # he may have stepped to the other side of it
+    return dive | {"through": "side", "shifted": round(total, 2), "gap": round(gap, 2), "dir": side}

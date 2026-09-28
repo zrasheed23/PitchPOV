@@ -205,33 +205,44 @@ export function animateBicycle(rig: Rig, k: number, side: 1 | -1) {
 // A shot close to the keeper: no dive, he reacts toward it and it beats him.
 // k seconds from his reaction; `side` +1 toward his right; height: the ball's
 // height where it reaches him, `arrive` seconds after his reaction; through:
-// "legs" (a low ball between his feet), "side" (past his hand) or "over".
+// "legs" (a low ball between his feet), "side" (past his hand) or "over";
+// gap: metres from his centre to the ball as it passes.
 // He shifts his weight toward it and reaches for it (hands down in front for a
 // low ball, up to its height for a higher one, legs apart for one through his
-// legs), then recoils as it goes past: rocks back and down, and recovers.
+// legs), but he's beaten: his hand stops short of the ball (HAND_SHORT_M), and
+// once it's past he straightens up and his arms drop. He never ducks.
 export const BLOCK_LENGTH_S = 1.6
+const HAND_SHORT_M = 0.1
+const BALL_R = 0.11
+const SHOULDER_X = 0.24 // from his centre (Player.tsx)
+const ARM_M = 0.6
 
-export function animateBlock(rig: Rig, k: number, height: number, side: 1 | -1, arrive = 0.3, through = 'side') {
+export function animateBlock(rig: Rig, k: number, height: number, side: 1 | -1, arrive = 0.3, through = 'side', gap = 1) {
   const e = ease(k / 0.15) * (1 - ease((k - arrive - 0.9) / 0.5)) // in, hold, out
   const reach = ease(k / Math.max(arrive, 0.12)) // arms get there as the ball does
-  const after = ease((k - arrive) / 0.35) * (1 - ease((k - arrive - 0.6) / 0.6)) // the recoil
+  const after = ease((k - arrive) / 0.35) // it's past
   const low = 1 - Math.min(Math.max((height - 0.4) / 0.8, 0), 1)
   const legs = through === 'legs' ? 1 : 0
-  // Weight toward the ball, lower for a low ball; after it's past, rock back and drop.
-  rig.body.position.x = side * 0.18 * e * (1 - legs)
-  rig.body.position.y = (-0.22 * low - 0.12 * after) * e
-  rig.body.rotation.x = (-0.3 * low * (1 - after) + 0.35 * after) * e
-  rig.body.rotation.z = -side * (0.18 * reach * (1 - legs) + 0.1 * after) * e
+  // How far toward the ball his hand may get: short of it, never through it.
+  const room = Math.max(gap - BALL_R - HAND_SHORT_M, 0)
+  const sway = Math.min(0.18, Math.max(room - SHOULDER_X - ARM_M * 0.5, 0)) * (1 - legs)
+  const out = Math.min(Math.max((room - sway - SHOULDER_X) / ARM_M, 0), 1)
+  const ballArm = Math.min(0.7, Math.max(Math.asin(out) - ARM_REST_Z, 0)) * reach * e
+  // Weight toward the ball (only as far as there's room), lower for a low ball.
+  rig.body.position.x = side * sway * e
+  rig.body.position.y = -0.22 * low * e * (1 - after)
+  rig.body.rotation.x = -0.3 * low * e * (1 - after)
+  rig.body.rotation.z = -side * sway * reach * e
   // Legs: bent; apart for a ball between them.
   rig.hipL.rotation.x = rig.hipR.rotation.x = 0.5 * low * e
   rig.hipL.rotation.z = -(0.05 + 0.3 * legs) * e
   rig.hipR.rotation.z = (0.05 + 0.3 * legs) * e
   rig.kneeL.rotation.x = rig.kneeR.rotation.x = -(0.9 * low + 0.2) * e - 0.05
-  // Arms: toward the ball's height, the one on its side reaching out more.
+  // Arms: toward the ball's height, the one on its side reaching out as far as it can.
   const up = 0.4 + Math.min(Math.max(height / 2.2, 0), 1) * 2.3
-  rig.shoulderL.rotation.x = rig.shoulderR.rotation.x = up * reach * e * (1 - 0.4 * after)
-  rig.shoulderL.rotation.z = -ARM_REST_Z - (side < 0 ? 0.7 : 0.15) * reach * e
-  rig.shoulderR.rotation.z = ARM_REST_Z + (side > 0 ? 0.7 : 0.15) * reach * e
+  rig.shoulderL.rotation.x = rig.shoulderR.rotation.x = up * reach * e * (1 - 0.6 * after)
+  rig.shoulderL.rotation.z = -ARM_REST_Z - (side < 0 ? ballArm : 0.15 * reach * e)
+  rig.shoulderR.rotation.z = ARM_REST_Z + (side > 0 ? ballArm : 0.15 * reach * e)
   rig.elbowL.rotation.x = rig.elbowR.rotation.x = 0.15 + 0.3 * after
 }
 

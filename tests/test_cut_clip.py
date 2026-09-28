@@ -240,3 +240,13 @@ def test_statsbomb_votes_win_over_the_pairing_in_the_swapped_periods():
     assert home == {"24": 33.0, "22": 20.0, "10": 39.1, "23": 51.7}
     away = {p["jerseyNum"]: p["x"] for p in lists["away"]}
     assert away == {"10": 41.8, "1": -27.4, "12": 30.0, "8": 5.0}
+
+
+def test_statsbomb_freeze_frame_agreement_with_the_tracking():
+    from cut_clip import freeze_agreement
+    players = {f"h{i}": {"team": "home"} for i in range(4)} | {f"a{i}": {"team": "away"} for i in range(4)}
+    at = {pid: (float(i), 10.0 if pid[0] == "h" else -10.0) for i, pid in enumerate(players)}
+    ff = [(None, players[pid]["team"], (x + 0.5, y), False) for pid, (x, y) in at.items() if pid != "h0"]
+    shot = {"type": "Shot", "p": "h0", "ff": ff, "raw": {"shot": {"outcome": {"name": "Goal"}}}}
+    assert math.isclose(freeze_agreement([shot], "h0", at, players), 0.5)
+    assert freeze_agreement([dict(shot, ff=ff[:3])], "h0", at, players) is None  # too few players

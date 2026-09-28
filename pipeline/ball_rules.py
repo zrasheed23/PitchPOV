@@ -239,6 +239,15 @@ def find_kick(ball, times, player_frames, shooter, frame, part="F", side=None):
     return best[1] if best is not None and best[0] <= KICK_MAX_M else frame
 
 
+EASE_ACCEL = 4.0  # m/s^2: a correction eased in (smoothstep, peak 6 d / T^2) adds at most this to his own run
+
+
+def ease_time(d, at_least, catchup=None):
+    """Seconds each side to ease a d-metre correction in: at least `at_least`,
+    no faster than `catchup` m/s on top of his run, and no harder than EASE_ACCEL."""
+    return max(at_least, d / catchup if catchup else 0.0, math.sqrt(6 * d / EASE_ACCEL))
+
+
 SHOOTER_TRUST_M = 3.0  # farther than this from the ball at the kick, his tracked position is the wrong one
 SHOOTER_EASE_S = 1.5
 SHOOTER_CATCHUP_MPS = 4.0  # the most he's moved on top of his own run
@@ -255,7 +264,7 @@ def move_shooter(player_frames, times, pid, kick, ball_xy, toward):
     spot = (ball_xy[0] - dx / n * FOOT_M, ball_xy[1] - dy / n * FOOT_M)
     off = (spot[0] - p[0], spot[1] - p[1])
     gap = math.hypot(*off)
-    ease = max(SHOOTER_EASE_S, gap / SHOOTER_CATCHUP_MPS)
+    ease = ease_time(gap, SHOOTER_EASE_S, SHOOTER_CATCHUP_MPS)
     for k, frame in enumerate(player_frames):
         if pid not in frame:
             continue
@@ -278,11 +287,11 @@ GOAL_AREA_X, GOAL_AREA_Y = 52.5 - 3.0, 10.0  # near the goal line: the ball's po
 def ease_player_to(player_frames, times, pid, f, spot, ease_s=MEET_EASE_S, catchup=MEET_CATCHUP_MPS):
     """Put a player's centre at `spot` at frame f, blending in before and out
     after over at least ease_s (longer if he'd gain more than `catchup` m/s on
-    his own run). In place; returns metres moved."""
+    his own run, or harder than EASE_ACCEL). In place; returns metres moved."""
     p = player_frames[f][pid]
     off = (spot[0] - p[0], spot[1] - p[1])
     gap = math.hypot(*off)
-    ease = max(ease_s, gap / catchup)
+    ease = ease_time(gap, ease_s, catchup)
     for k, frame in enumerate(player_frames):
         if pid not in frame:
             continue
@@ -303,10 +312,13 @@ def meet_touches(ball, times, player_frames, contacts, end, skip=(), players=Non
     teammate at the ball means PFF mixed their identities up (identity.try_swap,
     checked against StatsBomb's events); else, if the tracked ball backs the
     spot ("tr"), the touch is flagged, and if only StatsBomb does, the ball
-    goes to him. The rest
+    goes to him, unless the tracked ball has already shown his track to be
+    wrong in this clip (a flagged touch of his): then his other far touches
+    are flagged too and the ball stays at StatsBomb's spot. The rest
     are left for the touch rule, which moves the ball. In place on
     player_frames; returns ([(contact, metres moved)], flagged contacts, swaps)."""
     moved, too_far, swaps = [], [], []
+    wrong_track = set()  # players the tracked ball puts far from their own touches
     for _ in range(2):  # moves near each other nudge earlier touches: settle them
         for c in contacts:
             f, pid = c["f"], c["p"]
@@ -329,7 +341,9 @@ def meet_touches(ball, times, player_frames, contacts, end, skip=(), players=Non
                 # Only StatsBomb puts the ball there (the tracked ball doesn't): its spot
                 # is the weak link, so the touch rule takes the ball to him. With the
                 # tracked ball there too, the player's track is wrong: flagged.
-                if c.get("tr") and c not in too_far:
+                if c.get("tr"):
+                    wrong_track.add(pid)
+                if (c.get("tr") or pid in wrong_track) and c not in too_far:
                     too_far.append(c)
                 continue
             # His centre just behind the ball, on the side he's coming from.
@@ -347,8 +361,8 @@ NUDGE_EASE_S = 0.3
 def clear_bodies(ball, times, player_frames, contacts, held, end, skip=None, rounds=3):
     """The ball never goes through a player it doesn't touch: a player it
     passes through (up to frame `end`) is nudged sideways, away from it, just
-    enough to clear it by BODY_CLEAR_M, easing in and out over NUDGE_EASE_S.
-    Touches (within 4 frames) and dead balls are left alone; skip: {player id:
+    enough to clear it by BODY_CLEAR_M, easing in and out over NUDGE_EASE_S
+    (longer for a bigger nudge: ease_time). Touches (within 4 frames) and dead balls are left alone; skip: {player id:
     first frame not to nudge him from} (the keeper from the shot on). In place;
     returns nudges (m)."""
     skip = skip or {}
@@ -384,10 +398,11 @@ def clear_bodies(ball, times, player_frames, contacts, held, end, skip=None, rou
                 vx, vy = (ball[j][0] - ball[k][0], ball[j][1] - ball[k][1]) if ball[j] else (1.0, 0.0)
                 dx, dy, n = -vy, vx, math.hypot(vx, vy) or 1.0
             ox, oy = dx / n * need, dy / n * need
+            ease = ease_time(need, NUDGE_EASE_S)
             for m, frame in enumerate(player_frames):
                 if pid not in frame:
                     continue
-                u = 1 - abs(times[m] - times[k]) / NUDGE_EASE_S
+                u = 1 - abs(times[m] - times[k]) / ease
                 if u > 0:
                     w = u * u * (3 - 2 * u) if abs(m - k) > 1 else 1.0
                     x, y = frame[pid]
@@ -421,12 +436,76 @@ def limit_player_speeds(player_frames, times, fixed, top=PLAYER_TOP_MPS):
                 d = math.hypot(dx, dy)
                 if d > step:
                     out[k] = (out[j][0] + dx / d * step, out[j][1] + dy / d * step)
+        # Two fixed frames too far apart to join at `top` leave a jump beside one of
+        # them: spread it over the stretch between them instead (his own track plus a
+        # correction that eases from one end to the other), faster than `top` but no jump.
+        anchors = sorted(keep)
+        for k in range(1, len(out)):
+            if math.dist(out[k], out[k - 1]) <= top * (times[k] - times[k - 1]) * 1.01:
+                continue
+            a = max((f for f in anchors if f < k), default=0)
+            b = min((f for f in anchors if f >= k), default=len(out) - 1)
+            if b <= a:
+                continue
+            da = (out[a][0] - track[a][0], out[a][1] - track[a][1])
+            db = (out[b][0] - track[b][0], out[b][1] - track[b][1])
+            for m in range(a + 1, b):
+                u = (times[m] - times[a]) / (times[b] - times[a])
+                w = u * u * (3 - 2 * u)
+                out[m] = (track[m][0] + da[0] + (db[0] - da[0]) * w, track[m][1] + da[1] + (db[1] - da[1]) * w)
         worst = max(math.dist(a, b) for a, b in zip(track, out))
         if worst > 0.01:
             shifts[pid] = worst
             for k, xy in enumerate(out):
                 player_frames[k][pid] = xy
     return shifts
+
+
+SETTLE_MPS = 1.0  # after the goal a correction fades (or grows) no faster than this
+SETTLE_RAMP_S = 1.0  # a player held still (the keeper after his dive) gets moving over this long
+
+
+def settle_after_goal(player_frames, reference, times, start, hold=None):
+    """After the goal (frame `start`, the ball over the line) broadcast tracking
+    is replays and celebrations, and a correction that ends there (a keeper
+    eased back after his dive, a keeper let out of his area) would send a
+    player gliding or sprinting across the pitch. From then on each player
+    moves as his PFF track (`reference`: {id: (x, y)} per frame) does, and his
+    correction on top of it changes by at most SETTLE_MPS. hold: {player id:
+    last frame to leave alone} (the keeper through his dive); he gets moving
+    from there over SETTLE_RAMP_S instead of setting off at full speed. In
+    place; returns {player id: largest change (m)}."""
+    hold = hold or {}
+    changed = {}
+    for pid in {pid for frame in player_frames for pid in frame}:
+        s = max(start, hold.get(pid, -1) + 1)
+        if s < 1 or s >= len(player_frames):
+            continue
+        prev = player_frames[s - 1].get(pid)
+        ref = reference[s - 1].get(pid)
+        if prev is None or ref is None:
+            continue
+        off = (prev[0] - ref[0], prev[1] - ref[1])
+        worst = 0.0
+        for k in range(s, len(player_frames)):
+            p, r = player_frames[k].get(pid), reference[k].get(pid)
+            if p is None or r is None:
+                break
+            want = (p[0] - r[0], p[1] - r[1])
+            step = SETTLE_MPS * (times[k] - times[k - 1])
+            dx, dy = want[0] - off[0], want[1] - off[1]
+            d = math.hypot(dx, dy)
+            off = want if d <= step else (off[0] + dx / d * step, off[1] + dy / d * step)
+            new = (r[0] + off[0], r[1] + off[1])
+            if pid in hold and times[k] - times[s - 1] < SETTLE_RAMP_S:
+                u = (times[k] - times[s - 1]) / SETTLE_RAMP_S
+                w = u * u * (3 - 2 * u)
+                new = (prev[0] + (new[0] - prev[0]) * w, prev[1] + (new[1] - prev[1]) * w)
+            worst = max(worst, math.dist(new, p))
+            player_frames[k][pid] = new
+        if worst > 0.01:
+            changed[pid] = worst
+    return changed
 
 
 def _crossing(ball, times, start, side):

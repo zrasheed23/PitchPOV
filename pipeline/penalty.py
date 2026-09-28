@@ -12,7 +12,7 @@ matches the ball leaving the spot to within ~0.1 s):
 - the keeper stands on his line, between the posts;
 - the taker is eased onto the ball over his run-up, so his foot meets it.
 After the kick the moved players blend back onto their tracked positions, over
-at least BLEND_S and slowly enough that no one gains more than CATCHUP_MPS on
+at least BLEND_S, accelerating no harder than EASE_ACCEL, and slowly enough that no one gains more than CATCHUP_MPS on
 his tracked run (PFF often has them several metres inside the area at the kick).
 """
 
@@ -29,6 +29,7 @@ TAKER_FROM_BALL_M = 0.5  # the taker's centre from the ball as he kicks it
 RUNUP_S = 2.0  # ease the taker onto the ball over this long before the kick
 BLEND_S = 0.5  # ease everyone back onto the tracking over at least this long after the kick
 CATCHUP_MPS = 5.0  # ...and no faster than this on top of their own movement
+EASE_ACCEL = 4.0  # ...and no harder than this (m/s^2; smoothstep peaks at 6 d / T^2), as ball_rules.EASE_ACCEL
 KEEPER_MAX_M = 6.0  # the defending keeper is the goalkeeper this close to the goal line at the kick
 
 
@@ -144,7 +145,8 @@ def place_players(player_frames, times, kick, side, taker, keeper):
         else:
             target = before[pid][kick]
         at_kick[pid] = (target[0] - xy[0], target[1] - xy[1])
-    fade = {pid: max(BLEND_S, math.hypot(*off) / CATCHUP_MPS) for pid, off in at_kick.items()}
+    fade = {pid: max(BLEND_S, math.hypot(*off) / CATCHUP_MPS, math.sqrt(6 * math.hypot(*off) / EASE_ACCEL))
+            for pid, off in at_kick.items()}
     longest = max(fade.values(), default=BLEND_S)
 
     biggest = 0.0

@@ -18,15 +18,17 @@ from goal_mouth import correct_goal_mouth, goal_side
 from accuracy import check_clip
 from ball_flight import anchor_frames, count_kinks, straighten_free_flight
 from ball_physics import apply_physics
-from ball_rules import FOOT_M, MEET_MAX_M, clear_bodies, ease_player_to, enforce_touch_rule, find_kick, fly_shot, limit_player_speeds, meet_touches, shot_contact
+from ball_rules import (FOOT_M, MEET_MAX_M, clear_bodies, ease_player_to, enforce_touch_rule, find_kick, fly_shot,
+                        limit_player_speeds, meet_touches, settle_after_goal, shot_contact)
 from contacts import align_contacts, find_contacts
-from dribble import rebuild_dribbles
+from dribble import follow_carries, rebuild_dribbles
 from estimate_gaps import estimate_gaps
 from goals import clip_name, find_goals
 from identity import try_swap
 from keepers import DIVE_HOLD_S, beat_keeper, defending_keeper, ease_to_freeze_frame, place_keepers, plan_dive
 from net import across_the_line
 from penalty import find_keeper, pin_ball, place_players
+from quality import check_quality
 from restarts import apply_restarts, find_restarts, redraw_roll_out
 from statsbomb import clip_events, match_events, merge_touches
 from touch_rule import violations
@@ -541,7 +543,7 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     chosen, estimated = estimate_gaps(fill_gaps(chosen), times, player_frames, goal_index)
     side = goal_side(chosen, goal_index)
     moved = 0.0
-    shot_swap = None
+    shot_swap = freeze_fit = None
     if shot_spot is not None and not direct:
         # The ball at StatsBomb's shot spot and the shooter at it (a well-supported
         # touch), moving him at most MEET_MAX_M (else an identity swap, else flagged).
@@ -551,7 +553,12 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
             shot_swap = try_swap(player_frames, players, goal["scorerId"], goal_index, shot_spot, sb_pre)
             p = player_frames[goal_index].get(goal["scorerId"])
             d = math.dist(p, shot_spot) if p is not None else math.inf
-        if d <= MEET_MAX_M:
+        # StatsBomb's freeze frame matching the tracked players says its shot is lined
+        # up with the tracking: then the shooter's own track is the one that's wrong
+        # (PFF estimates players it can't see), and he goes to the spot however far.
+        freeze_fit = freeze_agreement(sb_pre, goal["scorerId"], player_frames[goal_index], players)
+        trusted = freeze_fit is not None and freeze_fit <= FREEZE_AGREE_M and d <= SHOT_SPOT_TRUST_MAX_M
+        if d <= MEET_MAX_M or trusted:
             b = chosen[goal_index]
             if b is None or math.dist(b[:2], shot_spot) > SHOT_SPOT_M:
                 chosen[goal_index] = (shot_spot[0], shot_spot[1], b[2] if b else 0.11)
@@ -641,6 +648,12 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     if shot is None:
         shot = {"f": goal_index, "p": goal["scorerId"], "b": "F"}
         contacts = sorted(contacts + [shot], key=lambda c: c["f"])
+    # What he strikes it with: StatsBomb's body part where it names one (PFF's is often "foot").
+    sb_goal = next((e for e in sb_clip if e["type"] == "Shot" and e["p"] == shot["p"]
+                    and (e["raw"].get("shot") or {}).get("outcome", {}).get("name") == "Goal"), None)
+    part_from_sb = bool(sb_goal and sb_goal["b"] != "F" and not penalty and sb_goal["b"] != shot["b"])
+    if part_from_sb:
+        shot["b"] = sb_goal["b"]
     if not penalty and not direct and shot_spot is None:
         kick = find_kick(ball, times, player_frames, shot["p"], shot["f"], shot["b"], side)
         contacts = [c for c in contacts if c is shot or c["f"] < kick]
@@ -653,6 +666,8 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
                   if sb_keeper and defender else None)
     touch_frames = [c["f"] for c in contacts]
     kinks_before = count_kinks(ball, times, player_frames, touch_frames, goal_index)
+    # A StatsBomb carrier is with the ball, however far PFF has him trailing it (dribble.follow_carries).
+    followed = [] if penalty else follow_carries(ball, tracked, times, player_frames, sb_clip, goal_index)
     # Dribbles aren't logged touch by touch: rebuild them as pushes (dribble.py).
     ball, dribble_touches, carries, dribbles = rebuild_dribbles(ball, times, player_frames, contacts,
                                                                 0 if penalty else goal_index)
@@ -717,10 +732,12 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         raise ValueError(f"shot contact {shot} missing from {[(c['f'], c['p']) for c in contacts if c['f'] > shot['f'] - 20]}")
     technique = (placement or {}).get("technique")
     # His facing from how he really moved (the corrections ease players about).
-    pose, pose_z, pose_angle = shot_pose(final_shot, technique, ball, times, tracked_players)
+    # The ball's height as the feed measured it (the touch rule caps a foot touch at 1.2 m).
+    pose, pose_z, pose_angle = shot_pose(final_shot, technique, ball, times, tracked_players, paths[ball_source])
     dive = plan_dive(ball, times, player_frames, defender, shot["f"], side) if defender else None
     # It's a goal: the ball beats the keeper, it doesn't go through him (keepers.beat_keeper).
-    dive = beat_keeper(dive, player_frames, times, shot["f"], tuple(sb_keeper) if sb_keeper else None, ball)
+    dive = beat_keeper(dive, player_frames, times, shot["f"], tuple(sb_keeper) if sb_keeper else None, ball,
+                       tracked_players[shot["f"]].get(defender) if defender else None)
     dive_start = round(times[dive["f"]] - times[shot["f"]], 2) if dive else None
     redraw_roll_out(ball, times, restart_info)
     ball = [tuple(round(v, 2) for v in b) if b is not None else None for b in ball]
@@ -742,6 +759,8 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
                      and side * ball[k][0] >= 52.5), len(ball))
     nudges = clear_bodies(ball, times, player_frames, contacts, held, crossing,
                           skip={defender: shot["f"]} if defender else None)
+    # After the goal nobody snaps back onto PFF's track: corrections fade (ball_rules.settle_after_goal).
+    settled = settle_after_goal(player_frames, tracked_players, times, crossing, {defender: hold} if defender else None)
     sped = limit_player_speeds(player_frames, times, fixed)
     nudges += clear_bodies(ball, times, player_frames, contacts, held, crossing,
                            skip={defender: shot["f"]} if defender else None, rounds=3)
@@ -796,6 +815,7 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     }
     # StatsBomb's events in this clip, and the accuracy report on the clip as written (accuracy.py).
     accuracy = check_clip(clip, sb_clip, placement)
+    quality = check_quality(clip, sb_clip, placement, accuracy)  # every check against measured data, scored (quality.py)
     stats = {
         "frames": len(out_frames),
         "missing_ball": missing_ball,
@@ -818,6 +838,7 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         "cleared": cleared_after is not None,
         "line_change": line_change,
         "accuracy": accuracy,
+        "quality": quality,
         "sb_shift": sb_shift,
         "sb_counts": sb_counts,
         "sb_goal_frame": next((e["f"] for e in sb_clip if e["type"] == "Shot" and e["p"] == goal["scorerId"]
@@ -825,8 +846,11 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         "met": [(players[c["p"]]["name"], c["f"], round(m, 2)) for c, m in met],
         "too_far": [(players[c["p"]]["name"], c["f"]) for c in too_far],
         "sped": {players[pid]["name"]: round(m, 2) for pid, m in sped.items()},
+        "settled": {players[pid]["name"]: round(m, 2) for pid, m in settled.items()},
         "kick_shift": round(times[shot["f"]] - times[event_index], 2),
         "shot_move": round(shot_move, 2),
+        "shot_part": (shot["b"], part_from_sb),  # the shot's body part, and whether StatsBomb changed it
+        "freeze_fit": freeze_fit,  # StatsBomb's freeze frame to the tracking at the shot, median (m)
         "nudges": nudges,
         "swaps": [(players[c["p"]]["name"], players[o]["name"], a, b) for c, (o, a, b) in swaps]
                  + ([(players[goal["scorerId"]]["name"], players[shot_swap[0]]["name"], shot_swap[1], shot_swap[2])]
@@ -836,6 +860,7 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         "rule_counts": rule_counts,
         "contact_fixes": contact_fixes,
         "dribbles": len(dribbles),
+        "followed": [(players[pid]["name"], f, round(m, 2)) for pid, f, m in followed if m > 0.05],
         "carries": len(carries),
         "kinks": (kinks_before, kinks_after),
         "penalty_moved": moved,
@@ -854,6 +879,23 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
 
 
 SHOT_SPOT_M = 2.0
+FREEZE_AGREE_M = 2.0  # freeze frame to tracking, median: StatsBomb's shot is lined up with the tracking
+FREEZE_MIN_PLAYERS = 5
+SHOT_SPOT_TRUST_MAX_M = 20.0
+
+
+def freeze_agreement(events, scorer, at, players):
+    """Median distance from each player in the goal's StatsBomb freeze frame to
+    the nearest tracked player of his team at the shot (`at`: {id: (x, y)}),
+    or None without one (or with fewer than FREEZE_MIN_PLAYERS)."""
+    shot = next((e for e in events if e["type"] == "Shot" and e["p"] == scorer
+                 and (e["raw"].get("shot") or {}).get("outcome", {}).get("name") == "Goal"), None)
+    ds = []
+    for _, side, xy, _ in (shot or {}).get("ff", []):
+        mates = [math.dist(q, xy) for pid, q in at.items() if pid != scorer and players[pid]["team"] == side]
+        if mates:
+            ds.append(min(mates))
+    return sorted(ds)[len(ds) // 2] if len(ds) >= FREEZE_MIN_PLAYERS else None
 SHOT_SEARCH_S = 1.0
 SCORER_WEIGHT = 0.3
 SOURCE_MARGIN_M = 2.0  # the other feed's ball must be this much nearer StatsBomb's shot spot to switch

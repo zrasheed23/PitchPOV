@@ -126,9 +126,12 @@ def _match_events(game_id, home, away, date, home_id, roster, touches):
         if p not in offset:
             continue
         side, num = number[e["player"]["id"]]
+        # A shot's freeze frame: every other player StatsBomb saw, named, in the shooting team's frame.
+        ff = tuple((*number[q["player"]["id"]], tuple(q["location"]), q["position"]["name"] == "Goalkeeper")
+                   for q in (e.get("shot") or {}).get("freeze_frame", []) if q.get("player", {}).get("id") in number)
         out.append({"period": p, "t": _ts(e["timestamp"]) + offset[p], "side": side, "number": num,
                     "type": e["type"]["name"], "on_ball": on_ball(e), "b": body_part(e), "loc": e["location"],
-                    "raw": e})
+                    "ff": ff, "raw": e})
     return tuple(out)
 
 
@@ -161,7 +164,8 @@ def to_pitch(loc, attack):
 
 def clip_events(sb, frame_ms, player_id, attack, where=None):
     """The StatsBomb events inside a clip: dicts as match_events plus "f" (the
-    nearest clip frame), "p" (our player id) and "xy" (our pitch). sb:
+    nearest clip frame), "p" (our player id), "xy" (our pitch) and "ff" (a
+    shot's freeze frame: [(player id or None, side, (x, y), keeper)]). sb:
     match_events output; player_id(side, number) -> our id or None;
     attack[side]: +1/-1; where(player id, PFF video time s) -> (his tracked
     (x, y) or None, the tracked ball's (x, y) or None), used to line the clip's
@@ -176,7 +180,9 @@ def clip_events(sb, frame_ms, player_id, attack, where=None):
         pid = player_id(e["side"], e["number"])
         if pid is None:
             continue
-        evs.append(dict(e, p=pid, xy=to_pitch(e["loc"], attack[e["side"]])))
+        # Freeze frame: (our player id or None, side, (x, y), keeper), on our pitch.
+        ff = [(player_id(side, num), side, to_pitch(loc, attack[e["side"]]), gk) for side, num, loc, gk in e.get("ff", ())]
+        evs.append(dict(e, p=pid, xy=to_pitch(e["loc"], attack[e["side"]]), ff=ff))
     # PFF's video clock drifts against the period clock (up to ~5 s by the
     # goal), so each clip gets its own shift: the one where StatsBomb's event
     # locations best match where the tracking has those players and the ball

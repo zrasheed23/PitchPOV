@@ -111,6 +111,7 @@ interface Dive {
   height: number // the ball's height where it reaches him
   arrive: number // seconds from his reaction to the ball reaching him
   through: string // a block: "legs", "side" or "over"
+  gap: number // metres from him to the ball as it passes
 }
 
 function planDive(clip: Clip): Dive | null {
@@ -135,6 +136,7 @@ function planDive(clip: Clip): Dive | null {
     height: plan.height,
     arrive: clip.frames[plan.arrive_f].t - clip.frames[plan.f].t,
     through: plan.through ?? 'side',
+    gap: plan.gap,
   }
 }
 
@@ -320,7 +322,7 @@ export function Replay({ clip, track, playback, ball, onEnded }: ReplayProps) {
       } else if (dive && dive.kind === 'block' && k >= 0 && k < BLOCK_LENGTH_S) {
         g.rotation.y = yaw.current[id] = dive.yaw
         animateRig(rig, 0, 0)
-        animateBlock(rig, k, dive.height, dive.side, dive.arrive, dive.through)
+        animateBlock(rig, k, dive.height, dive.side, dive.arrive, dive.through, dive.gap)
       } else if (sc) {
         // Side-on: the ball goes off to the side of his kicking leg's swing
         // (his left for a right-footed scissor). Forward in pitch (x, y) is (-sin yaw, cos yaw).

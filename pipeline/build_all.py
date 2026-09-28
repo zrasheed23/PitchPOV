@@ -26,9 +26,13 @@ from cut_clip import (BALL_SOURCES, OVERRIDES, RAW, RAW_BALL_MAX_M, SHOT_PLACEME
                       load_overrides, load_shot_placement, read_windows, write_clip)
 from goals import build_index, clip_name, find_goals
 from accuracy import CHECKS
+from quality import CHECKS as QUALITY_CHECKS
 from restarts import KINDS
 
 CLIPS = Path("clips")
+QUALITY_REPORT = CLIPS / "quality_report.md"
+QUALITY_JSON = CLIPS / "quality.json"  # every finding per clip, for scripts (no "_": not a clip name)
+TOP_WORST = 15
 EXPECTED_GOALS = 172  # 2022 World Cup goals, excluding shootouts
 BIG_SHIFT_M = 3.0
 REVIEW_RAW_M = 6.0  # raw source chosen this close to RAW_BALL_MAX_M: worth a look
@@ -100,7 +104,7 @@ def previous_poses(folder=CLIPS):
     """{clip file name: pose} from the clips already on disk (the last build)."""
     out = {}
     for path in folder.glob("*.json"):
-        if path.name == "index.json":
+        if path.name in ("index.json", QUALITY_JSON.name):
             continue
         try:
             out[path.name] = clip_pose(json.loads(path.read_text()))
@@ -135,6 +139,35 @@ def review_reasons(stats):
     if stats["ball_source"] == "raw" and d is not None and REVIEW_RAW_M <= d <= RAW_BALL_MAX_M:
         reasons.append(f"raw ball {d:.1f} m from the scoring team")
     return reasons
+
+
+def quality_lines(results):
+    """The quality report (quality.py) as lines: findings per check, how many
+    clips pass everything, and every clip ranked worst first with its reasons."""
+    rows = sorted(results, key=lambda gs: -gs[1]["quality"]["score"])
+    passing = [g for g, s in rows if not any(s["quality"]["checks"].values())]
+    lines = ["# Clip quality report", "",
+             "Every clip checked against measured data (StatsBomb events, freeze frames, end locations) and "
+             "physics (pipeline/quality.py). Score: each failing check's worst severity (1 = just over its "
+             "threshold, capped at 3), weighted; higher is worse.", "",
+             f"Clips: {len(rows)}; passing every check: {len(passing)}", "",
+             "| check | clips | findings |", "|---|---:|---:|"]
+    for check in QUALITY_CHECKS:
+        hits = [s["quality"]["checks"][check] for _, s in rows if s["quality"]["checks"][check]]
+        lines.append(f"| {check} | {len(hits)} | {sum(len(h) for h in hits)} |")
+    freeze = [s["quality"]["freeze"] for _, s in rows if s["quality"]["freeze"]]
+    if freeze:
+        meds = sorted(f["median"] for f in freeze)
+        lines += ["", f"Freeze frame vs tracking at the shot ({len(freeze)} clips): median of clip medians "
+                      f"{statistics.median(meds):.2f} m, worst clip median {meds[-1]:.2f} m, worst single player "
+                      f"{max(f['max'] for f in freeze):.1f} m."]
+    lines += ["", "## Ranked (worst first)", "", "| # | clip | goal | score | reasons |", "|---:|---|---|---:|---|"]
+    for n, (g, s) in enumerate(rows, 1):
+        q = s["quality"]
+        why = "; ".join(f"{c}: {f[0]}" + (f" (+{len(f) - 1})" if len(f) > 1 else "")
+                        for c, f in sorted(q["checks"].items(), key=lambda cf: -q["severity"].get(cf[0], 0)) if f)
+        lines.append(f"| {n} | {clip_name(g)} | {g['scorer']} {g['clock']} | {q['score']:.1f} | {why or 'passes'} |")
+    return lines
 
 
 def report(matches, results, problems, skipped, n_games, last_poses=None):
@@ -297,7 +330,8 @@ def report(matches, results, problems, skipped, n_games, last_poses=None):
             if sp["pose"] in ("scissor", "bicycle") or sp["technique"] == "Volley":
                 ang = "?" if sp["angle"] is None else f"{sp['angle']:.0f}"
                 print(f"  {clip_name(g)}  {g['scorer']} {g['clock']}  {sp['technique']} -> {sp['pose']}: "
-                      f"ball {sp['z']:.2f} m, facing {ang} deg from the shot")
+                      f"measured ball {'none' if sp['z'] is None else f"{sp['z']:.2f} m"}, "
+                      f"facing {ang} deg from the shot")
         lines = [(g, s["line_change"]) for g, s in results if s["line_change"] and not s["cleared"]]
         free = [(g, lc) for g, lc in lines if not lc[2]]
         print(f"ball across the goal line (0.07 s either side, on the ground plane; the net simulated from the "
@@ -375,6 +409,23 @@ def report(matches, results, problems, skipped, n_games, last_poses=None):
         for g, reasons in review:
             print(f"  {clip_name(g)}  {g['scorer']} {g['clock']}  {'; '.join(reasons)}")
 
+    if results:
+        lines = quality_lines(results)
+        QUALITY_REPORT.write_text("\n".join(lines) + "\n")
+        write_clip({clip_name(g): s["quality"] for g, s in results}, QUALITY_JSON)
+        rows = sorted(results, key=lambda gs: -gs[1]["quality"]["score"])
+        print(f"quality report ({QUALITY_REPORT}): clips / findings per check:")
+        for check in QUALITY_CHECKS:
+            hits = [s["quality"]["checks"][check] for _, s in results if s["quality"]["checks"][check]]
+            print(f"  {check:18} {len(hits):3} clips, {sum(len(h) for h in hits):4} findings")
+        print(f"  passing every check: {sum(1 for _, s in results if not any(s['quality']['checks'].values()))} "
+              f"of {len(results)}; worst {TOP_WORST}:")
+        for g, s in rows[:TOP_WORST]:
+            q = s["quality"]
+            top = sorted((c for c, f in q["checks"].items() if f), key=lambda c: -q["severity"].get(c, 0))[:3]
+            print(f"    {q['score']:5.1f}  {clip_name(g)}  {g['scorer']} {g['clock']}: "
+                  + "; ".join(f"{c}: {q['checks'][c][0]}" for c in top))
+
     print(f"problems: {len(problems)}")
     for p in problems:
         print(f"  {p}")
@@ -415,7 +466,7 @@ def main():
         e["review"] = reviews[e["gameEventId"]]
     write_clip(index, CLIPS / "index.json")
     print(f"wrote {CLIPS / 'index.json'} ({len(index)} goals)")
-    keep = {e["clip"] for e in index} | {"index.json"}
+    keep = {e["clip"] for e in index} | {"index.json", QUALITY_JSON.name}
     stale = sorted(p for p in CLIPS.glob("*.json") if p.name not in keep)
     for p in stale:
         p.unlink()
