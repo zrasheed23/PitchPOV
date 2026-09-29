@@ -253,7 +253,8 @@ def correct_goal_mouth(ball, times, goal_index, aim=None):
         for i in range(goal_index, k):
             if ball[i] is None:
                 continue
-            w = min(max((times[i] - t0) / (t1 - t0), 0.0), 1.0) if t1 > t0 else 1.0
+            # (the shot frame itself never moves, even if the line is the next frame)
+            w = min(max((times[i] - t0) / (t1 - t0), 0.0), 1.0) if t1 > t0 else float(i > goal_index)
             x, y, z = ball[i]
             ball[i] = (x, y + dy * w, max(z + dz * w, 0.0))
         point = (point[0], yc + dy, zc + dz)

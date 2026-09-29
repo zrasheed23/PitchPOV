@@ -182,7 +182,7 @@ def clip_events(sb, frame_ms, player_id, attack, where=None):
             continue
         # Freeze frame: (our player id or None, side, (x, y), keeper), on our pitch.
         ff = [(player_id(side, num), side, to_pitch(loc, attack[e["side"]]), gk) for side, num, loc, gk in e.get("ff", ())]
-        evs.append(dict(e, p=pid, xy=to_pitch(e["loc"], attack[e["side"]]), ff=ff))
+        evs.append(dict(e, p=pid, xy=to_pitch(e["loc"], attack[e["side"]]), ff=ff, att=attack[e["side"]]))
     # PFF's video clock drifts against the period clock (up to ~5 s by the
     # goal), so each clip gets its own shift: the one where StatsBomb's event
     # locations best match where the tracking has those players and the ball

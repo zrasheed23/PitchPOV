@@ -331,7 +331,7 @@ def meet_touches(ball, times, player_frames, contacts, end, skip=(), players=Non
             if d <= MEET_M or not (c.get("sb") or near_line):
                 continue
             if d > MEET_MAX_M and players is not None:
-                swap = try_swap(player_frames, players, pid, f, b[:2], events, shot)
+                swap = try_swap(player_frames, players, pid, f, b[:2], events, shot, times)
                 if swap:
                     swaps.append((c, swap))
                     p = player_frames[f][pid]

@@ -24,7 +24,7 @@ from contacts import align_contacts, find_contacts
 from dribble import follow_carries, rebuild_dribbles
 from estimate_gaps import estimate_gaps
 from goals import clip_name, find_goals
-from identity import try_swap
+from identity import blend_swap, try_swap
 from keepers import DIVE_HOLD_S, beat_keeper, defending_keeper, ease_to_freeze_frame, place_keepers, plan_dive
 from net import across_the_line
 from penalty import find_keeper, pin_ball, place_players
@@ -34,6 +34,7 @@ from statsbomb import clip_events, match_events, merge_touches
 from touch_rule import violations
 from volleys import shot_pose
 import relabel
+import three_sixty
 
 RAW = Path("data/raw")
 OVERRIDES = Path(__file__).resolve().parent / "overrides.json"
@@ -517,11 +518,23 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     direct = (goal_event.get("gameEvents") or {}).get("setpieceType") == "F"
     shot_spot, shot_move, shot_reach = None, 0.0, None
     sb_pre = []
+    frames360, shift360, swaps360, moved360, cost360 = [], 0.0, [], {}, ([], [])
     if not penalty:
         shot_index, shot_spot, sb_pre, shot_reach = statsbomb_shot(meta, roster, events, frames, frame_ms, times, players,
                                                        player_frames, goal, event_index, length, width)
         if not direct:  # a direct free kick is timed by its restart
             goal_index = shot_index
+        # StatsBomb 360: every visible player at each event checks PFF's labels and tracks (three_sixty.py).
+        frames360 = three_sixty.clip_frames(meta, sb_pre, players)
+        shift360 = three_sixty.align(frames360, player_frames, times, players)
+        cost360 = [three_sixty.frame_cost(fr, player_frames[fr["f"]], players) for fr in frames360]
+        swaps360 = three_sixty.fix_labels(frames360, player_frames, times, players,
+                                          (goal["scorerId"], goal_index, shot_spot) if shot_spot else None)
+        for a, b, lo, hi, _ in swaps360:  # PFF's own track carries the right name too
+            three_sixty._swap(tracked_players, a, b, lo, hi)
+            blend_swap(tracked_players, times, a, b, lo, hi)
+        moved360 = three_sixty.correct_tracks(frames360, player_frames, times, players)
+        cost360 = (cost360, [three_sixty.frame_cost(fr, player_frames[fr["f"]], players) for fr in frames360])
     # The scorer's team: for an own goal that's the conceding player on the ball.
     team = [xy for pid, xy in player_frames[goal_index].items() if players[pid]["team"] == goal["side"]]
     paths = {source: drop_out_of_play(ball_path(frames, source, length, width), goal_index) for source in BALL_SOURCES}
@@ -554,7 +567,7 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         p = player_frames[goal_index].get(goal["scorerId"])
         d = math.dist(p, shot_spot) if p is not None else math.inf
         if d > MEET_MAX_M:
-            shot_swap = try_swap(player_frames, players, goal["scorerId"], goal_index, shot_spot, sb_pre)
+            shot_swap = try_swap(player_frames, players, goal["scorerId"], goal_index, shot_spot, sb_pre, times=times)
             p = player_frames[goal_index].get(goal["scorerId"])
             d = math.dist(p, shot_spot) if p is not None else math.inf
         # StatsBomb's freeze frame matching the tracked players says its shot is lined
@@ -893,6 +906,10 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         "dive": dict(dive, start_s=dive_start) if dive else None,
         "shot_pose": {"technique": technique, "pose": pose, "z": pose_z, "angle": pose_angle},
         "votes": len(votes or {}),
+        "three_sixty": {"frames": len(frames360), "shift": round(shift360, 2),
+                        "cost": [round(sum(c) / len(c), 2) if c else None for c in cost360],
+                        "swaps": [(players[a]["name"], players[b]["name"], lo, hi, across) for a, b, lo, hi, across in swaps360],
+                        "moved": {players[pid]["name"]: round(m, 1) for pid, m in moved360.items()}},
         "swapped": votes is not None,
     }
     return clip, stats
@@ -939,6 +956,9 @@ def untracked_shot(ball, shot, spot, events, scorer):
         ball[k] = tuple(u + (v - u) * w for u, v in zip(ball[a], ball[shot]))
     return a
 SHOT_SEARCH_S = 1.0
+GOAL_MOUTH_Y = 4.5  # the tracked ball over the line this near the middle (and under the bar) is the goal going in
+UNTRACKED_SHOT_MPS = 25.0  # an untracked shot's speed, for timing it back from the tracked crossing
+UNTRACKED_HEADER_MPS = 12.0
 SCORER_WEIGHT = 0.3
 SOURCE_MARGIN_M = 2.0  # the other feed's ball must be this much nearer StatsBomb's shot spot to switch
 UNTRACKED_M = 0.5  # a gap-filled ball counts as this much farther
@@ -982,6 +1002,16 @@ def statsbomb_shot(meta, roster, events, frames, frame_ms, times, players, playe
                 default=math.inf)
     if reach > SHOT_SPOT_M and window:
         best = min(window, key=lambda k: abs(k - shot["f"]))
+        # ...unless the tracked ball is in the goal by then: the kick is a
+        # shot's flight from the spot before it crosses.
+        line = next((k for k in range(window[0], len(prelim)) if prelim[k] is not None and tracked[k]
+                     and abs(prelim[k][0]) >= PITCH_LENGTH / 2 and abs(prelim[k][1]) <= GOAL_MOUTH_Y
+                     and prelim[k][2] <= 2.44), None)
+        if line is not None:
+            speed = UNTRACKED_HEADER_MPS if shot["b"] == "H" else UNTRACKED_SHOT_MPS
+            flight = math.dist(spot, (math.copysign(PITCH_LENGTH / 2, prelim[line][0]), prelim[line][1])) / speed
+            latest = max((k for k in range(line) if times[line] - times[k] >= flight), default=0)
+            best = min(best, latest)
     return best, spot, sb, reach
 
 

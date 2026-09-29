@@ -380,6 +380,33 @@ def report(matches, results, problems, skipped, n_games, last_poses=None):
               f"{sum(len(s['swaps']) for _, s in swapped_ids)} in {len(swapped_ids)} clips; longest:")
         top(swapped_ids, lambda s: max(b - a for _, _, a, b in s["swaps"]),
             lambda s: "; ".join(f"{x} <-> {y} frames {a}-{b}" for x, y, a, b in s["swaps"][:2]))
+        untracked = [(g, s) for g, s in results if s.get("shot_reach") is not None and s["shot_reach"] > 2.0
+                     and s["shot_reach"] != float("inf")]
+        print(f"shots the tracked ball never reaches (> 2 m from StatsBomb's shot spot; taken there, the last action "
+              f"re-flown): {len(untracked)} clips; farthest:")
+        top(untracked, lambda s: s["shot_reach"], lambda s: f"tracked ball {s['shot_reach']:.1f} m from the spot")
+        beaten_src = [(g, s) for g, s in results if s.get("override_source_beaten")]
+        if beaten_src:
+            print(f"ballSource overrides overruled by StatsBomb's shot spot: "
+                  + ", ".join(f"{clip_name(g)} -> {s['override_source_beaten']}" for g, s in beaten_src))
+        ts = [(g, s) for g, s in results if s["three_sixty"]["frames"]]
+        print(f"StatsBomb 360: {sum(s['three_sixty']['frames'] for _, s in ts)} frames in {len(ts)} clips; "
+              f"fit to the tracking (median per clip, m): "
+              f"{statistics.median(s['three_sixty']['cost'][0] for _, s in ts if s['three_sixty']['cost'][0]):.2f} -> "
+              f"{statistics.median(s['three_sixty']['cost'][1] for _, s in ts if s['three_sixty']['cost'][1]):.2f}")
+        moved = [(g, s) for g, s in results if s["three_sixty"]["moved"]]
+        n_moved = sum(len(s["three_sixty"]["moved"]) for _, s in moved)
+        big = sum(1 for _, s in moved for m in s["three_sixty"]["moved"].values() if m > 5)
+        print(f"  tracks corrected onto 360 spots: {n_moved} in {len(moved)} clips ({big} by more than 5 m); most:")
+        top(moved, lambda s: max(s["three_sixty"]["moved"].values()),
+            lambda s: ", ".join(f"{n} {m:.1f} m" for n, m in sorted(s["three_sixty"]["moved"].items(),
+                                                                       key=lambda x: -x[1])[:3]))
+        sw = [(g, s) for g, s in results if s["three_sixty"]["swaps"]]
+        across = sum(1 for _, s in sw for *_, a in s["three_sixty"]["swaps"] if a)
+        print(f"  labels swapped from 360 (named player's spot on another track): "
+              f"{sum(len(s['three_sixty']['swaps']) for _, s in sw)} in {len(sw)} clips ({across} across teams):")
+        top(sw, lambda s: len(s["three_sixty"]["swaps"]),
+            lambda s: "; ".join(f"{x} <-> {y} {a}-{b}" for x, y, a, b, _ in s["three_sixty"]["swaps"][:3]), n=8)
         nudged = [(g, s) for g, s in results if s["nudges"]]
         print(f"players nudged so the ball doesn't pass through them: {sum(len(s['nudges']) for _, s in nudged)} in "
               f"{len(nudged)} clips; most:")
