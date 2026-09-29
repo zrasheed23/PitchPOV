@@ -13,6 +13,9 @@
     "bicycle": 0
   },
   "sequences": {
+    "10517_6738451.json": {"who": "Kylian Mbappé 80:58, final: Rabiot's long ball, Mbappé's header down to Thuram, Thuram's right foot back, Mbappé's volley (no self-touches)",
+                           "touches": ["Kingsley Coman", "Adrien Rabiot", "Kylian Mbappé", "Marcus Thuram", "Kylian Mbappé"],
+                           "last_parts": ["H", "R", "R"]},
     "10516_6730425.json": {"who": "Josko Gvardiol 06:26 v Morocco: Majer free kick, Perišić flick, Gvardiol header",
                            "touches": ["Lovro Majer", "Ivan Perisic", "Josko Gvardiol"], "shot_part": "H"},
     "10517_6738550.json": {"who": "Ángel Di María 35:21, final (correct as is)",

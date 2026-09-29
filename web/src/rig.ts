@@ -45,6 +45,7 @@ export function animateRig(rig: Rig, phase: number, speed: number) {
   rig.hipL.rotation.z = rig.hipR.rotation.z = 0
   rig.body.rotation.z = 0
   rig.body.position.x = 0
+  rig.body.position.z = 0
   rig.shoulderL.rotation.z = -ARM_REST_Z
   rig.shoulderR.rotation.z = ARM_REST_Z
 }
@@ -320,4 +321,90 @@ export function animateScissor(rig: Rig, k: number, side: 1 | -1) {
   rig.shoulderR.rotation.z = ARM_REST_Z + 1.0 * on
   rig.shoulderL.rotation.x = rig.shoulderR.rotation.x = 0.4 * land * up
   rig.elbowL.rotation.x = rig.elbowR.rotation.x = 0.3
+}
+
+// Defenders (the pipeline's `defense`: StatsBomb blocks, clearances, tackles).
+// k seconds from the contact (negative before). He drops into it from
+// SLIDE_BEFORE_S, is down at the contact, slides on (the tracked position
+// carries him), and gets up by SLIDE_AFTER_S. The body pivots at the feet, so
+// it's shifted to keep his middle on the tracked position.
+export const SLIDE_BEFORE_S = 0.35
+export const SLIDE_AFTER_S = 1.4
+
+// Slide tackle: leaning back on one hip, the leading leg straight out along the
+// ground at the ball, the other folded under him, arms back for balance.
+// `side` +1 leads with the right leg.
+export function animateSlide(rig: Rig, k: number, side: 1 | -1) {
+  const down = ease((k + SLIDE_BEFORE_S) / 0.3) // dropping into it
+  const up = 1 - ease((k - 0.7) / 0.7) // back on his feet by 1.4 s
+  const on = Math.min(down, up)
+  const tilt = on * 1.05 // leaning back ~60 degrees
+  rig.body.rotation.x = tilt
+  rig.body.rotation.z = -side * on * 0.35 // onto the hip of the folded leg
+  // Hips near the grass: the pivot is at the feet, so lift by the hips' drop and pull forward.
+  rig.body.position.y = Math.max(0, (0.2 - 0.92 * Math.cos(tilt)) * on)
+  rig.body.position.z = -0.4 * Math.sin(tilt)
+  rig.body.position.x = side * 0.1 * on
+  const lead = side > 0 ? rig.hipR : rig.hipL
+  const leadKnee = side > 0 ? rig.kneeR : rig.kneeL
+  const fold = side > 0 ? rig.hipL : rig.hipR
+  const foldKnee = side > 0 ? rig.kneeL : rig.kneeR
+  lead.rotation.x = on * 1.2 // straight out in front along the grass
+  leadKnee.rotation.x = -0.05
+  fold.rotation.x = on * 0.6
+  foldKnee.rotation.x = -on * 1.8 // tucked under
+  lead.rotation.z = fold.rotation.z = 0
+  rig.shoulderL.rotation.x = rig.shoulderR.rotation.x = -on * 0.7 // arms back, hands to the ground
+  rig.shoulderL.rotation.z = -ARM_REST_Z - on * 0.5
+  rig.shoulderR.rotation.z = ARM_REST_Z + on * 0.5
+  rig.elbowL.rotation.x = rig.elbowR.rotation.x = 0.2
+}
+
+// Sliding block: down on his side across the ball's path, the leading leg
+// stretched out toward it (sideways), arms tucked in (no handball).
+export function animateSlideBlock(rig: Rig, k: number, side: 1 | -1) {
+  const down = ease((k + SLIDE_BEFORE_S) / 0.3)
+  const up = 1 - ease((k - 0.7) / 0.7)
+  const on = Math.min(down, up)
+  const roll = on * 0.95 // over onto his side, facing the ball
+  rig.body.rotation.z = -side * roll
+  rig.body.rotation.x = on * 0.25
+  rig.body.position.y = Math.max(0, (0.25 - 0.92 * Math.cos(roll)) * on)
+  rig.body.position.x = side * Math.sin(roll) * 0.45
+  rig.body.position.z = 0
+  const lead = side > 0 ? rig.hipR : rig.hipL
+  const leadKnee = side > 0 ? rig.kneeR : rig.kneeL
+  const other = side > 0 ? rig.hipL : rig.hipR
+  const otherKnee = side > 0 ? rig.kneeL : rig.kneeR
+  lead.rotation.x = on * 0.9
+  lead.rotation.z = side * on * 0.5 // swung out toward the ball
+  leadKnee.rotation.x = -0.05
+  other.rotation.x = on * 0.4
+  other.rotation.z = 0
+  otherKnee.rotation.x = -on * 1.2
+  rig.shoulderL.rotation.x = rig.shoulderR.rotation.x = -on * 0.3
+  rig.shoulderL.rotation.z = -ARM_REST_Z + on * 0.05 // tucked to his sides
+  rig.shoulderR.rotation.z = ARM_REST_Z - on * 0.05
+  rig.elbowL.rotation.x = rig.elbowR.rotation.x = 1.4 * on
+}
+
+// Standing block: feet planted wide, knees bent, leaning into the ball's path,
+// arms behind his back (no handball). In from -0.3 s, out by +0.6 s.
+export const STAND_BLOCK_BEFORE_S = 0.3
+export const STAND_BLOCK_AFTER_S = 0.6
+
+export function animateStandBlock(rig: Rig, k: number, side: 1 | -1) {
+  const on = ease((k + STAND_BLOCK_BEFORE_S) / 0.2) * (1 - ease((k - 0.25) / 0.35))
+  rig.hipL.rotation.x = rig.hipR.rotation.x = 0.35 * on
+  rig.hipL.rotation.z = -0.3 * on
+  rig.hipR.rotation.z = 0.3 * on
+  rig.kneeL.rotation.x = rig.kneeR.rotation.x = -0.6 * on - 0.05
+  rig.body.rotation.x = -0.3 * on
+  rig.body.rotation.z = -side * 0.12 * on // into the ball's side
+  rig.body.position.y = -0.12 * on
+  rig.body.position.x = side * 0.08 * on
+  rig.shoulderL.rotation.x = rig.shoulderR.rotation.x = -0.6 * on // hands behind his back
+  rig.shoulderL.rotation.z = -ARM_REST_Z + 0.08 * on
+  rig.shoulderR.rotation.z = ARM_REST_Z - 0.08 * on
+  rig.elbowL.rotation.x = rig.elbowR.rotation.x = 1.0 * on
 }

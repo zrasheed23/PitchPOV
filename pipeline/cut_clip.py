@@ -23,6 +23,7 @@ from ball_rules import (FOOT_M, MEET_MAX_M, SHOOTER_TRUST_M, clear_bodies, ease_
                         settle_after_goal, shot_contact)
 from contacts import align_contacts, find_contacts
 from dribble import follow_carries, rebuild_dribbles
+from defense import plan_defense
 from estimate_gaps import estimate_gaps
 from goals import clip_name, find_goals
 from identity import blend_swap, try_swap
@@ -31,7 +32,7 @@ from net import across_the_line
 from penalty import find_keeper, pin_ball, place_players
 from quality import check_quality
 from restarts import apply_restarts, find_restarts, redraw_roll_out
-from statsbomb import clip_events, match_events, merge_touches
+from statsbomb import SAME_TOUCH_S, clip_events, match_events, merge_touches
 from touch_rule import violations
 from volleys import shot_pose
 import relabel
@@ -628,6 +629,24 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     sb_clip, sb_shift = clip_statsbomb(meta, roster, events, frame_ms, players, player_frames, ball, tracked, goal, side)
     contacts, ball, sb_placed, lofted, sb_counts = merge_touches(
         contacts, [] if penalty else sb_clip, ball, tracked, times, max(goal_index, kick0), goal["scorerId"], player_frames)
+    # With StatsBomb covering the clip, only its actors touch the ball: a PFF touch
+    # stays only inside that player's StatsBomb carry (his dribbling touches) or as
+    # the shot itself; the rest are PFF's own copies of StatsBomb's touches, or
+    # touches StatsBomb doesn't have.
+    sb_carries = [(e["f"], e["f"] + round((e["raw"].get("duration") or 0) * meta["fps"]), e["p"])
+                  for e in sb_clip if e["type"] == "Carry"]
+    dropped_pff = []
+    if not penalty and any(e["on_ball"] for e in sb_clip):
+        same = round(SAME_TOUCH_S * meta["fps"])
+        keep_c = []
+        for c in contacts:
+            shot_touch = c["p"] == goal["scorerId"] and abs(c["f"] - max(goal_index, kick0)) <= same
+            in_carry = any(a - 3 <= c["f"] <= b + 3 and p == c["p"] for a, b, p in sb_carries)
+            if "sb" in c or shot_touch or in_carry or c["f"] > max(goal_index, kick0):
+                keep_c.append(c)
+            else:
+                dropped_pff.append(c)
+        contacts = keep_c
     if penalty:  # a shot touch lined up before the kick is the kick itself
         contacts = [{**c, "f": max(c["f"], goal_index)} for c in contacts]
         contacts = [c for n, c in enumerate(contacts) if not any(d["f"] == c["f"] and d["p"] == c["p"]
@@ -674,7 +693,9 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     # What he strikes it with: StatsBomb's body part where it names one (PFF's is often "foot").
     sb_goal = next((e for e in sb_clip if e["type"] == "Shot" and e["p"] == shot["p"]
                     and (e["raw"].get("shot") or {}).get("outcome", {}).get("name") == "Goal"), None)
-    part_from_sb = bool(sb_goal and sb_goal["b"] != "F" and not penalty and sb_goal["b"] != shot["b"])
+    # (A header only when StatsBomb says Head: its "no body part" isn't one either.)
+    part_from_sb = bool(sb_goal and not penalty and sb_goal["b"] != shot["b"]
+                        and (sb_goal["b"] != "F" or shot["b"] == "H"))
     if part_from_sb:
         shot["b"] = sb_goal["b"]
     if not penalty and not direct and shot_spot is None:
@@ -693,7 +714,8 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     followed = [] if penalty else follow_carries(ball, tracked, times, player_frames, sb_clip, goal_index)
     # Dribbles aren't logged touch by touch: rebuild them as pushes (dribble.py).
     ball, dribble_touches, carries, dribbles = rebuild_dribbles(ball, times, player_frames, contacts,
-                                                                0 if penalty else goal_index)
+                                                                0 if penalty else goal_index,
+                                                                sb_carries if any(e["on_ball"] for e in sb_clip) else None)
     contacts = sorted(contacts + dribble_touches, key=lambda c: c["f"])
     touch_frames = [c["f"] for c in contacts]
     # Rebuilt dribbles are already real pushes: hold every frame of them in place below.
@@ -725,7 +747,8 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     if clearer is None:
         cleared_after = None
     ball, shot_info = fly_shot(ball, times, player_frames, shot["f"], shot["p"], shot["b"], side, penalty or direct,
-                               cleared_after, deflections, aim, anchored=shot_spot is not None and not direct and not penalty)
+                               cleared_after, deflections, aim, anchored=shot_spot is not None and not direct and not penalty,
+                               lob=(placement or {}).get("technique") == "Lob")
     # After the kick only a deflection with the ball near him touches it (the
     # shot is logged twice, or by a player the ball never reaches).
     # A goal-line clearance: the defender's touch where the ball turns back.
@@ -801,6 +824,11 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     nudges += clear_bodies(ball, times, player_frames, contacts, held, crossing,
                            skip={defender: shot["f"]} if defender else None, rounds=3)
 
+    # Defenders' blocks, clearances and tackles: slides or standing, from the measured data (defense.py).
+    measured = paths[ball_source]
+    defense = plan_defense(sb_clip, contacts, measured, [b is not None for b in measured], times, tracked_players,
+                           players, shot["f"], clip_ball=ball)
+
     out_frames = []
     for t, b, ps in zip(times, ball, player_frames):
         out_frames.append({
@@ -844,7 +872,8 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         "kickFrame": shot["f"],
         "shotSpot": [round(v, 2) for v in shot_spot] if shot_spot is not None else None,  # StatsBomb's shot location
         "shotPose": pose or "none",  # how the goal is struck: none, half, volley, scissor, bicycle (volleys.py)  # the frame the shot leaves his foot (goalFrame is PFF's shot event)
-        "keeperDive": dive,  # how the keeper reacts to the shot: see keepers.plan_dive
+        "keeperDive": dive,
+        "defense": defense,  # StatsBomb blocks/clearances/tackles: kind slide | slideBlock | block (defense.py)  # how the keeper reacts to the shot: see keepers.plan_dive
         "needsReview": correction["needs_review"],
         "teams": {"home": team_meta("home"), "away": team_meta("away")},
         "players": list(players.values()),
@@ -900,6 +929,8 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         "rule_breaks": rule_breaks,
         "rule_counts": rule_counts,
         "contact_fixes": contact_fixes,
+        "defense": defense,
+        "dropped_pff": [(players[c["p"]]["name"], c["f"]) for c in dropped_pff],  # PFF touches no StatsBomb actor makes
         "dribbles": len(dribbles),
         "followed": [(players[pid]["name"], f, round(m, 2)) for pid, f, m in followed if m > 0.05],
         "carries": len(carries),

@@ -407,6 +407,17 @@ def report(matches, results, problems, skipped, n_games, last_poses=None):
               f"{sum(len(s['three_sixty']['swaps']) for _, s in sw)} in {len(sw)} clips ({across} across teams):")
         top(sw, lambda s: len(s["three_sixty"]["swaps"]),
             lambda s: "; ".join(f"{x} <-> {y} {a}-{b}" for x, y, a, b, _ in s["three_sixty"]["swaps"][:3]), n=8)
+        dropped = [(g, s) for g, s in results if s["dropped_pff"]]
+        print(f"PFF touches dropped (StatsBomb covers the clip; not a StatsBomb actor's touch, the shot, or inside "
+              f"his StatsBomb carry): {sum(len(s['dropped_pff']) for _, s in dropped)} in {len(dropped)} clips")
+        lobs = [(g, s) for g, s in results if s["shot"].get("lob")]
+        print(f"lobs (StatsBomb technique Lob) flown as chips: {len(lobs)}: "
+              + ", ".join(f"{g['scorer']} {g['clock']}" for g, _ in lobs))
+        dfn = [(g, s) for g, s in results if s["defense"]]
+        kinds = Counter(d["kind"] for _, s in dfn for d in s["defense"])
+        print(f"defensive actions animated (StatsBomb Block/Clearance/Tackle): {sum(kinds.values())} in {len(dfn)} clips "
+              f"({', '.join(f'{k} {n}' for k, n in sorted(kinds.items()))}; "
+              f"{sum(1 for _, s in dfn for d in s['defense'] if not d['ok'])} failed)")
         smooth = [(g, s) for g, s in results if s["accel_smoothed"]]
         print(f"corrections smoothed so no one accelerates harder than 10 m/s² (7.5 after the goal) where PFF's own "
               f"track doesn't: {sum(len(s['accel_smoothed']) for _, s in smooth)} players in {len(smooth)} clips; most:")

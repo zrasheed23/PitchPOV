@@ -50,6 +50,9 @@ export interface Clip {
   kickFrame?: number // the frame the shot leaves the scorer (goalFrame is PFF's shot event)
   // The keeper's reaction to the shot: a dive toward where it reaches him (dir along pitch y), or a block.
   keeperDive?: { keeper: string; kind: 'dive' | 'block'; f: number; dir: 1 | -1; stretch: number; height: number; reached: boolean; gap: number; arrive_f: number; through?: string; short?: number } | null
+  // Defenders' StatsBomb blocks, clearances and tackles: a slide tackle, a sliding block or a standing
+  // block by player p at frame f (his touch, or the event), facing dir (pitch x, y); ok = it worked.
+  defense?: { f: number; p: string; kind: 'slide' | 'slideBlock' | 'block'; ok: boolean; type: string; dir: [number, number] }[]
   restarts?: { type: string; f: number; p: string; out: number | null; hold: [number, number] | null; placed: [number, number]; hidden: number[] }[]
   ballEstimated?: [number, number][] // frame ranges where the tracking lost the ball and the pipeline estimated it
   needsReview: boolean // the ball never gets near the goal and was left as tracked

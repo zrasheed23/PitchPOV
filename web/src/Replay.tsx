@@ -14,6 +14,10 @@ import {
   PLAYER_HEIGHT,
   SCISSOR_AFTER_S,
   SCISSOR_BEFORE_S,
+  SLIDE_AFTER_S,
+  SLIDE_BEFORE_S,
+  STAND_BLOCK_AFTER_S,
+  STAND_BLOCK_BEFORE_S,
   THROW_AFTER_S,
   BICYCLE_AFTER_S,
   BICYCLE_BEFORE_S,
@@ -24,6 +28,9 @@ import {
   animateKeeper,
   animateRig,
   animateScissor,
+  animateSlide,
+  animateSlideBlock,
+  animateStandBlock,
   animateThrow,
   animateTouch,
 } from './rig'
@@ -253,6 +260,20 @@ export function Replay({ clip, track, playback, ball, onEnded }: ReplayProps) {
       }),
     [clip, track, duration],
   )
+  // Defenders' blocks, clearances and tackles (pipeline defense.py).
+  const defense = useMemo(
+    () =>
+      (clip.defense ?? []).map((d) => {
+        const slide = d.kind !== 'block'
+        return {
+          ...d,
+          t: clip.frames[d.f].t,
+          before: slide ? SLIDE_BEFORE_S : STAND_BLOCK_BEFORE_S,
+          after: slide ? SLIDE_AFTER_S : STAND_BLOCK_AFTER_S,
+        }
+      }),
+    [clip],
+  )
   const [hovered, setHovered] = useState<string | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
   const labelled = hovered ?? selected
@@ -316,6 +337,7 @@ export function Replay({ clip, track, playback, ball, onEnded }: ReplayProps) {
       const sc = touches.find(
         (c) => c.v === 'scissor' && c.p === id && pb.time > c.t - SCISSOR_BEFORE_S && pb.time < c.t + SCISSOR_AFTER_S,
       )
+      const df = defense.find((d) => d.p === id && pb.time > d.t - d.before && pb.time < d.t + d.after)
       if (dive && dive.kind === 'dive' && k >= 0 && k < DIVE_LENGTH_S) {
         g.rotation.y = yaw.current[id] = dive.yaw
         animateDive(rig, k, dive.side, dive.strength, dive.height)
@@ -337,6 +359,14 @@ export function Replay({ clip, track, playback, ball, onEnded }: ReplayProps) {
         // Bicycle: his back to where the ball goes, the kick up and over him.
         if (vo.dir) g.rotation.y = yaw.current[id] = Math.atan2(vo.dir[0], -vo.dir[1])
         animateBicycle(rig, pb.time - vo.t, vo.b === 'L' ? -1 : 1)
+      } else if (df) {
+        // Facing the ball; the leg on its side leads.
+        if (df.dir[0] || df.dir[1]) g.rotation.y = yaw.current[id] = Math.atan2(-df.dir[0], df.dir[1])
+        animateRig(rig, 0, 0)
+        const lead: 1 | -1 = 1
+        if (df.kind === 'slide') animateSlide(rig, pb.time - df.t, lead)
+        else if (df.kind === 'slideBlock') animateSlideBlock(rig, pb.time - df.t, lead)
+        else animateStandBlock(rig, pb.time - df.t, lead)
       } else if (th) {
         if (th.dir[0] || th.dir[1]) g.rotation.y = yaw.current[id] = Math.atan2(-th.dir[0], th.dir[1])
         animateRig(rig, 0, 0)

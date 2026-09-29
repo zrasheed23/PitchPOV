@@ -66,6 +66,12 @@ def on_ball(e):
     return False
 
 
+def part_named(e):
+    """StatsBomb names the body part (a receipt never does; some passes don't)."""
+    detail = e.get(e["type"]["name"].lower().replace(" ", "_")) or {}
+    return e["type"]["name"] == "Goal Keeper" or (detail.get("body_part") or {}).get("name") in BODY
+
+
 def body_part(e):
     """R/L foot, H head, X hands, F foot (side unknown)."""
     detail = e.get(e["type"]["name"].lower().replace(" ", "_")) or {}
@@ -130,7 +136,8 @@ def _match_events(game_id, home, away, date, home_id, roster, touches):
         ff = tuple((*number[q["player"]["id"]], tuple(q["location"]), q["position"]["name"] == "Goalkeeper")
                    for q in (e.get("shot") or {}).get("freeze_frame", []) if q.get("player", {}).get("id") in number)
         out.append({"period": p, "t": _ts(e["timestamp"]) + offset[p], "side": side, "number": num,
-                    "type": e["type"]["name"], "on_ball": on_ball(e), "b": body_part(e), "loc": e["location"],
+                    "type": e["type"]["name"], "on_ball": on_ball(e), "b": body_part(e), "named": part_named(e),
+                    "loc": e["location"],
                     "ff": ff, "raw": e})
     return tuple(out)
 
@@ -226,6 +233,7 @@ AT_SPOT_M = 2.0  # the tracked ball this close to StatsBomb's location is the to
 SAME_TOUCH_S = 0.3  # a PFF touch by the same player this close is the same touch
 TOUCH_Z = {"H": 1.9, "X": 1.3}  # ball height where it's placed: head, hands; feet on the ground
 HIGH_PASS_PEAK_M = 3.0
+HEAD_FROM_Z = 1.6  # a touch with no logged body part, the measured ball higher than this: a header (not chest)
 MAX_CONNECT_MPS = 35.0
 TRACKED_AGREE_M = 2.0  # faster than this between two touches, one of them is mistimed  # a StatsBomb "High Pass" (crosses, long balls) goes at least this high
 
@@ -260,8 +268,8 @@ def merge_touches(contacts, sb, ball, tracked, times, last_frame, shooter=None, 
         if wanted and wanted[-1]["p"] == e["p"] and e["f"] - wanted[-1]["f"] <= 3:
             # A receipt (or recovery) and the pass, shot or clearance that comes off
             # it at once: one touch, with the action's body part (a flick-on is a header).
-            if e["b"] != "F" and e["type"] in ("Pass", "Shot", "Clearance", "Block"):
-                wanted[-1] = dict(wanted[-1], b=e["b"])
+            if e.get("named") and e["type"] in ("Pass", "Shot", "Clearance", "Block"):
+                wanted[-1] = dict(wanted[-1], b=e["b"], named=True)
             continue
         wanted.append(e)
     for n, e in enumerate(wanted):
@@ -293,7 +301,10 @@ def merge_touches(contacts, sb, ball, tracked, times, last_frame, shooter=None, 
             ball[f] = (e["xy"][0], e["xy"][1], z)
             placed.append(f)
             counts["placed"] += 1
-        c = {"f": f, "p": e["p"], "b": e["b"], "sb": e["type"], "xy": e["xy"]} | ({"tr": 1} if best is not None else {})
+        part = e["b"]
+        if not e.get("named") and tracked[f] and ball[f] is not None and ball[f][2] > HEAD_FROM_Z:
+            part = "H"  # no body part logged: the measured ball at head height is a header
+        c = {"f": f, "p": e["p"], "b": part, "sb": e["type"], "xy": e["xy"]} | ({"tr": 1} if best is not None else {})
         if e["type"] == "Pass" and (e["raw"].get("pass") or {}).get("height", {}).get("name") == "High Pass":
             lofted[f] = HIGH_PASS_PEAK_M
         touches.append(c)

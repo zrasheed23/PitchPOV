@@ -41,6 +41,8 @@ MIN_SHOT_MPS = {"H": 11.0, "X": 8.0}
 MIN_KICK_MPS = 20.0
 MAX_SHOT_MPS = 35.0
 MIN_SHOT_S = 0.25
+LOB_PEAK_M = 3.0  # a chip rises at least this high: over a keeper's reach
+LOB_MAX_S = 3.5
 PEAK_TRIES = 8
 
 
@@ -646,7 +648,7 @@ def _crossing(ball, times, start, side):
 
 
 def fly_shot(ball, times, player_frames, kick, shooter, part, side, penalty=False, cleared_after=None,
-             deflections=(), aim=None, anchored=False):
+             deflections=(), aim=None, anchored=False, lob=False):
     """Fly the shot from the shooter's foot at frame `kick` to where the path
     (already aimed by the goal-mouth correction) crosses the goal line, then
     into the net. For a goal-line clearance (cleared_after set) the target is
@@ -655,7 +657,8 @@ def fly_shot(ball, times, player_frames, kick, shooter, part, side, penalty=Fals
     [{"f", "p", "b"}]; one is kept as a change of direction if the ball is
     within reach of him then. May move the shooter in player_frames (see
     move_shooter). anchored: the ball at the kick is at StatsBomb's shot
-    location, so it stays there and the shooter comes to it. Returns (ball, info)."""
+    location, so it stays there and the shooter comes to it. lob: StatsBomb's
+    technique is Lob (a chip): flown as a high arc (LOB_PEAK_M). Returns (ball, info)."""
     out = list(ball)
     info = {"shot": False, "speed": None, "deflected": [], "at_foot_moved": 0.0, "shooter_moved": 0.0}
     if out[kick] is None:
@@ -701,6 +704,18 @@ def fly_shot(ball, times, player_frames, kick, shooter, part, side, penalty=Fals
         want = length / MAX_SHOT_MPS
     elif took > max(length / floor, MIN_SHOT_S):
         want = max(length / floor, MIN_SHOT_S)
+    if lob and len(points) == 1:
+        # A chip: the first flight time whose kick lands where it's aimed and
+        # rises over a keeper's reach on the way (a lob is slow and high).
+        z0, z1 = points[0][2][2], target[2]
+        t = max(length / MAX_SHOT_MPS, MIN_SHOT_S)
+        while t <= LOB_MAX_S:
+            kv = solve_to_height(z0, length, t, z1)
+            if kv is not None and simulate(z0, kv[0], kv[1], [t])[2] >= LOB_PEAK_M:
+                want = t
+                info["lob"] = True
+                break
+            t += 0.05
     scale = want / took if took > 0 else 1.0
     t0 = times[kick]
     points = [(f, t0 + (t - t0) * scale, p) for f, t, p in points]

@@ -163,11 +163,14 @@ def foot_spot(ball, player, velocity):
     return player[0] + dx / dl * FOOT_AHEAD_M, player[1] + dy / dl * FOOT_AHEAD_M, 0.0
 
 
-def rebuild_dribbles(ball, times, player_frames, contacts, end):
+def rebuild_dribbles(ball, times, player_frames, contacts, end, sb_carries=None):
     """Rebuild every dribble before frame `end`. Changes player_frames in place
-    (smoothed carriers). Returns (ball, added contacts, carries, rebuilt), where
-    carries are [first, last, player id] stretches left to the viewer and rebuilt
-    are the (first, last) stretches replaced here."""
+    (smoothed carriers). sb_carries: StatsBomb's carries [(first, last, player
+    id)], when it covers the clip: then only a stretch inside one of his carries
+    is a dribble (anyone else keeping the ball near him isn't touching it).
+    Returns (ball, added contacts, carries, rebuilt), where carries are [first,
+    last, player id] stretches left to the viewer and rebuilt are the (first,
+    last) stretches replaced here."""
     out = list(ball)
     added, carries = [], []
     rebuilt = []
@@ -175,6 +178,8 @@ def rebuild_dribbles(ball, times, player_frames, contacts, end):
     for c in contacts:
         logged_by.setdefault(c["p"], []).append(c["f"])
     for first, last, pid in find_dribbles(ball, times, player_frames, contacts, end):
+        if sb_carries is not None and not any(p == pid and a - 3 <= last and first <= b + 3 for a, b, p in sb_carries):
+            continue
         smooth_carrier(player_frames, times, first, last, pid)
         touches = touch_frames(first, last, pid, times, player_frames, logged_by.get(pid, []))
         logged = set(logged_by.get(pid, []))

@@ -62,6 +62,10 @@ def test_confirmed_sequences(name):
     want = CONFIRMED["sequences"][name]
     clip = load(name)
     assert touch_sequence(clip) == want["touches"], want["who"]
+    if "last_parts" in want:  # body parts of the last touches up to the kick, in order
+        kick = clip.get("kickFrame", clip["goalFrame"])
+        parts = [c.get("b") for c in clip["contacts"] if c["f"] <= kick][-len(want["last_parts"]):]
+        assert parts == want["last_parts"], f"{want['who']}: body parts {parts}"
     if "shot_part" in want:
         kick = clip.get("kickFrame", clip["goalFrame"])
         shot = next(c for c in clip["contacts"] if c["f"] == kick and c["p"] == clip["scorerId"])
