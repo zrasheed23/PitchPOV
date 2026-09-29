@@ -413,6 +413,8 @@ def report(matches, results, problems, skipped, n_games, last_poses=None):
         lobs = [(g, s) for g, s in results if s["shot"].get("lob")]
         print(f"lobs (StatsBomb technique Lob) flown as chips: {len(lobs)}: "
               + ", ".join(f"{g['scorer']} {g['clock']}" for g, _ in lobs))
+        low = [g for g, s in results if s["shot"].get("low_drive")]
+        print(f"low shots driven along the grass (StatsBomb crossing <= 0.3 m, foot, from the ground): {len(low)} clips")
         onside = [(g, s) for g, s in results if s["offside_moved"]]
         print(f"scorers eased back onside at the assist: {len(onside)} clips: "
               + ", ".join(f"{g['scorer']} {g['clock']} {s['offside_moved']:.1f} m"

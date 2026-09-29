@@ -43,6 +43,7 @@ MAX_SHOT_MPS = 35.0
 MIN_SHOT_S = 0.25
 LOB_PEAK_M = 3.0  # a chip rises at least this high: over a keeper's reach
 LOB_MAX_S = 3.5
+LOW_DRIVE_Z = 0.3  # a foot shot from the ground crossing this low is driven along the grass
 PEAK_TRIES = 8
 
 
@@ -716,6 +717,12 @@ def fly_shot(ball, times, player_frames, kick, shooter, part, side, penalty=Fals
                 info["lob"] = True
                 break
             t += 0.05
+    # A low shot struck along the grass (StatsBomb has it crossing low, a foot
+    # kick from the ground) skims all the way: a lofted kick through the air
+    # would have to rise to knee height to cover the distance in time.
+    low_drive = (not lob and part not in ("H", "X") and len(points) == 1
+                 and points[0][2][2] <= LOW_DRIVE_Z and target[2] <= LOW_DRIVE_Z)
+    info["low_drive"] = low_drive
     scale = want / took if took > 0 else 1.0
     t0 = times[kick]
     points = [(f, t0 + (t - t0) * scale, p) for f, t, p in points]
@@ -727,7 +734,7 @@ def fly_shot(ball, times, player_frames, kick, shooter, part, side, penalty=Fals
         peak = max([pa[2], pb[2]] + [old[k][2] for k in range(kick, k_cross) if old[k] is not None
                                      and ta <= t0 + (times[k] - t0) * scale <= tb])
         kick_v = None
-        if tb - ta > 0.05 and distance > 0.3:
+        if tb - ta > 0.05 and distance > 0.3 and not low_drive:
             kick_v = solve_to_height(pa[2], distance, tb - ta, pb[2])
             if kick_v is None:
                 kick_v = _kick(pa[2], distance, tb - ta, peak, pb[2], (pb[2] - 0.05, pb[2] + 0.05))

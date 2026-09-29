@@ -311,7 +311,7 @@ def keeper_radius(z):
     if HANDS_Z[0] <= z <= HANDS_Z[1]:
         return HANDS_M
     return next((r for top, r in BODY_R if z <= top), None)
-LEGS_Z, LEGS_GAP = 0.35, 0.12  # a ball this low and this central goes through his legs
+LEGS_Z, LEGS_GAP = 0.35, 0.22  # a ball this low and this central goes through his legs (legs apart: feet ~0.4 m out)
 FREEZE_SLACK_M = 1.0  # he may stand at most this far from StatsBomb's spot to let it past
 
 
