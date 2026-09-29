@@ -19,7 +19,7 @@ from accuracy import check_clip
 from ball_flight import anchor_frames, count_kinks, straighten_free_flight
 from ball_physics import apply_physics
 from ball_rules import (FOOT_M, MEET_MAX_M, SHOOTER_TRUST_M, clear_bodies, ease_player_to, enforce_touch_rule, find_kick,
-                        fly_shot, limit_player_accels, limit_player_speeds, meet_touches, move_shooter,
+                        fly, fly_shot, limit_player_accels, limit_player_speeds, meet_touches, move_shooter,
                         settle_after_goal, shot_contact)
 from contacts import align_contacts, find_contacts
 from dribble import follow_carries, rebuild_dribbles
@@ -29,6 +29,7 @@ from goals import clip_name, find_goals
 from identity import blend_swap, try_swap
 from keepers import DIVE_HOLD_S, beat_keeper, defending_keeper, ease_to_freeze_frame, place_keepers, plan_dive
 from net import across_the_line
+from offside import ONSIDE_M, TOLERANCE_M as OFFSIDE_TOLERANCE_M, ease_onside, find_assist, margin as offside_margin, retime_pass
 from penalty import find_keeper, pin_ball, place_players
 from quality import check_quality
 from restarts import apply_restarts, find_restarts, redraw_roll_out
@@ -771,6 +772,30 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     if kb is not None and kp is not None and math.dist(kb[:2], kp) > (FOOT_M + 0.15 if anchored else SHOOTER_TRUST_M):
         shot_info["shooter_moved"] += move_shooter(player_frames, times, shot["p"], shot["f"], kb[:2],
                                                    ball[min(shot_info.get("line_frame") or shot["f"] + 5, len(ball) - 1)][:2])
+    # Every goal stood: the scorer is onside when the last pass to him is played (offside.py).
+    offside_moved, pass_retimed = 0.0, 0.0
+    if not penalty and not goal["ownGoal"]:
+        assist, af = find_assist(sb_clip, goal["scorerId"], shot["f"], contacts)
+        if assist is not None and ball[af] is not None:
+            team_of = {pid: p["team"] for pid, p in players.items()}
+            m = offside_margin(player_frames[af], ball[af][:2], team_of, goal["scorerId"], side)
+            if m is not None and m > OFFSIDE_TOLERANCE_M:
+                nxt = next((c["f"] for c in contacts if c["p"] == goal["scorerId"] and c["f"] > af), None)
+                offside_moved = ease_onside(player_frames, times, goal["scorerId"], af, m + ONSIDE_M, side, nxt)
+                if nxt is not None:
+                    # Too far from onside to his touch in the time: the pass was played earlier.
+                    new_af = retime_pass(ball, times, contacts, player_frames, goal["scorerId"], af, nxt, fly)
+                    if new_af != af:
+                        pass_retimed = round(times[af] - times[new_af], 2)
+                        pb, pp = ball[new_af], player_frames[new_af].get(assist["p"])
+                        if pb is not None and pp is not None and math.dist(pb[:2], pp) > FOOT_M:
+                            d = math.dist(pb[:2], pp)  # the passer at the ball, earlier in his run
+                            ease_player_to(player_frames, times, assist["p"], new_af,
+                                           (pb[0] + (pp[0] - pb[0]) / d * FOOT_M, pb[1] + (pp[1] - pb[1]) / d * FOOT_M))
+                        m = offside_margin(player_frames[new_af], ball[new_af][:2], team_of, goal["scorerId"], side)
+                        if m is not None and m > -ONSIDE_M:
+                            offside_moved += ease_onside(player_frames, times, goal["scorerId"], new_af, m + ONSIDE_M,
+                                                         side, nxt)
     # Checked and fixed on the clip as written (2 decimals; times to the ms).
     times_out = [round(t, 3) for t in times]
     players_out = [{pid: (round(x, 2), round(y, 2)) for pid, (x, y) in ps.items()} for ps in player_frames]
@@ -917,6 +942,8 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         "settled": {players[pid]["name"]: round(m, 2) for pid, m in settled.items()},
         "kick_shift": round(times[shot["f"]] - times[event_index], 2),
         "shot_move": round(shot_move, 2),
+        "offside_moved": round(offside_moved, 2),  # the scorer eased back onside at the assist (m)
+        "pass_retimed": pass_retimed,  # the assist moved this much earlier (s) so he can make his run
         "shot_part": (shot["b"], part_from_sb),  # the shot's body part, and whether StatsBomb changed it
         "freeze_fit": freeze_fit,
         "shot_reach": shot_reach,  # nearest the tracked ball comes to StatsBomb's shot spot (m)

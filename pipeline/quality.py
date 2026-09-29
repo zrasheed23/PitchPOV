@@ -12,6 +12,8 @@ a severity (1.0 = just over its threshold); a clip with none passes.
 - "shot origin": the ball at the kick, and the shooter, at StatsBomb's shot
   location.
 - "end location": the ball crossing the goal line at StatsBomb's end location.
+- "offside at assist": the scorer offside when the last pass to him is played
+  (offside.py); every goal stood.
 - "event sequence": every touch before the kick matches a StatsBomb event by
   the same player (within EVENT_S, and EVENT_M of its location); dribble
   pushes match his carry.
@@ -29,6 +31,7 @@ import statistics
 
 from accuracy import BALL_R, _crossing, _side
 from keepers import keeper_radius
+from offside import TOLERANCE_M as OFFSIDE_M, find_assist, margin
 
 FF_MEDIAN_M = 2.0
 FF_MAX_M = 5.0
@@ -52,7 +55,7 @@ POST_ACCEL_MPS2 = 8.0
 ACROBATIC = ("scissor", "bicycle")
 SEVERITY_CAP = 3.0
 
-WEIGHTS = {"shot origin": 3.0, "end location": 2.0, "freeze frame": 1.5, "wrong label": 1.5,
+WEIGHTS = {"shot origin": 3.0, "offside at assist": 2.0, "end location": 2.0, "freeze frame": 1.5, "wrong label": 1.5,
            "event sequence": 1.5, "carry": 1.5, "keeper in path": 2.0, "acrobatic": 1.0, "acceleration": 1.0,
            "teleport": 2.0, "keeper speed": 1.0, "post-goal": 1.5,
            # from accuracy.py ("shot spot" and "crossing off" are covered by shot origin and end location)
@@ -259,6 +262,23 @@ def score(found):
     return round(total, 2)
 
 
+def offside_at_assist(clip, statsbomb):
+    """The scorer past the second-last defender and the ball when the last pass to him is played (offside.py)."""
+    if clip.get("ownGoal") or clip.get("penalty"):
+        return []
+    kick = clip.get("kickFrame", clip["goalFrame"])
+    e, f = find_assist(statsbomb, clip["scorerId"], kick, clip.get("contacts", []))
+    if e is None:
+        return []
+    fr = clip["frames"][f]
+    team = {p["id"]: p["team"] for p in clip["players"]}
+    m = margin(fr["p"], fr["b"][:2] if fr["b"] else None, team, clip["scorerId"], _side(clip))
+    if m is None or m <= OFFSIDE_M:
+        return []
+    names = {p["id"]: p["name"] for p in clip["players"]}
+    return [(m / OFFSIDE_M, f"{m:.1f} m offside at frame {f} ({names.get(e['p'], e['p'])}'s pass)")]
+
+
 def check_quality(clip, statsbomb=(), placement=None, accuracy=None):
     """{"checks": {check: [text, ...]}, "severity": {check: worst}, "score",
     "freeze": {"median", "max", "players"} or None} for one clip dict."""
@@ -268,6 +288,7 @@ def check_quality(clip, statsbomb=(), placement=None, accuracy=None):
     ff, freeze = freeze_frame(clip, shot)
     found.update(ff)
     found["shot origin"] = shot_origin(clip, shot)
+    found["offside at assist"] = offside_at_assist(clip, statsbomb)
     found["end location"] = end_location(clip, placement)
     found["event sequence"] = event_sequence(clip, statsbomb)
     found["carry"] = carry(clip, statsbomb)

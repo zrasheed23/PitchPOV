@@ -413,6 +413,10 @@ def report(matches, results, problems, skipped, n_games, last_poses=None):
         lobs = [(g, s) for g, s in results if s["shot"].get("lob")]
         print(f"lobs (StatsBomb technique Lob) flown as chips: {len(lobs)}: "
               + ", ".join(f"{g['scorer']} {g['clock']}" for g, _ in lobs))
+        onside = [(g, s) for g, s in results if s["offside_moved"]]
+        print(f"scorers eased back onside at the assist: {len(onside)} clips: "
+              + ", ".join(f"{g['scorer']} {g['clock']} {s['offside_moved']:.1f} m"
+                          + (f" (pass {s['pass_retimed']:.2f} s earlier)" if s["pass_retimed"] else "") for g, s in onside))
         dfn = [(g, s) for g, s in results if s["defense"]]
         kinds = Counter(d["kind"] for _, s in dfn for d in s["defense"])
         print(f"defensive actions animated (StatsBomb Block/Clearance/Tackle): {sum(kinds.values())} in {len(dfn)} clips "
