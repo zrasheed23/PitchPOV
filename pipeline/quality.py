@@ -56,7 +56,7 @@ WEIGHTS = {"shot origin": 3.0, "end location": 2.0, "freeze frame": 1.5, "wrong 
            "event sequence": 1.5, "carry": 1.5, "keeper in path": 2.0, "acrobatic": 1.0, "acceleration": 1.0,
            "teleport": 2.0, "keeper speed": 1.0, "post-goal": 1.5,
            # from accuracy.py ("shot spot" and "crossing off" are covered by shot origin and end location)
-           "touch far": 1.5, "no-touch turn": 1.5, "keeper dive": 1.5, "statsbomb missing": 1.0, "sprint": 1.0,
+           "shooter": 3.0, "touch far": 1.5, "no-touch turn": 1.5, "keeper dive": 1.5, "statsbomb missing": 1.0, "sprint": 1.0,
            "keeper wide": 1.0, "body pass": 1.5}
 CHECKS = tuple(WEIGHTS)
 

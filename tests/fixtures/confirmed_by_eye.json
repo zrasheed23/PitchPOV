@@ -23,5 +23,13 @@
     "3840_6570985.json": {"who": "Jean-Charles Castelletto 28:06 v Serbia: tap-in from right next to the right post (attacker's view)",
                           "post": "right", "post_m": 2.5, "shooter_m": 1.2},
     "10517_6738550.json": {"who": "Ángel Di María 35:21, final (correct as is)", "shooter_m": 1.2}
+  },
+  "shooters": {
+    "3845_6594882.json": {"who": "Cody Gakpo 25:54 v Qatar: Gakpo shoots (an identity swap used to give it to Timber)",
+                          "shooter": "Cody Gakpo"}
+  },
+  "shot_spots": {
+    "3837_6549996.json": {"who": "Zakaria Aboukhlal 91:50 v Belgium: tap-in near the six-yard box, not a 17 m shot",
+                          "within_m": 2.0}
   }
 }

@@ -46,11 +46,26 @@ def _fit(player_frames, events, ids, lo, hi, swapped):
     return total
 
 
-def try_swap(player_frames, players, pid, f, spot, events=()):
+def keeps_shot(player_frames, a_id, b_id, lo, hi, shot):
+    """False if swapping a_id and b_id over lo..hi would take the shooter
+    farther from the ball at the kick. shot: (shooter id, kick frame, ball xy)."""
+    if shot is None:
+        return True
+    shooter, kick, spot = shot
+    if shooter not in (a_id, b_id) or not lo <= kick <= hi:
+        return True
+    other = b_id if shooter == a_id else a_id
+    mine, theirs = player_frames[kick].get(shooter), player_frames[kick].get(other)
+    return mine is None or theirs is None or math.dist(theirs, spot) < math.dist(mine, spot)
+
+
+def try_swap(player_frames, players, pid, f, spot, events=(), shot=None):
     """If a teammate of `pid` is within AT_BALL_M of `spot` at frame f and the
     swap fits StatsBomb's events better, swap the two tracks over the stretch
     (in place). events: the clip's StatsBomb events ("f", "p", "xy"); the touch
-    itself counts as one. Returns (other id, first, last) or None."""
+    itself counts as one. shot: (shooter id, kick frame, ball xy): no swap takes
+    the shooter away from the ball at the kick (keeps_shot). Returns (other id,
+    first, last) or None."""
     here = player_frames[f]
     if pid not in here:
         return None
@@ -63,6 +78,8 @@ def try_swap(player_frames, players, pid, f, spot, events=()):
     if d > AT_BALL_M:
         return None
     lo, hi = _stretch(player_frames, pid, other, f)
+    if not keeps_shot(player_frames, pid, other, lo, hi, shot):
+        return None
     evs = list(events) + [{"f": f, "p": pid, "xy": spot}]
     if _fit(player_frames, evs, (pid, other), lo, hi, True) > _fit(player_frames, evs, (pid, other), lo, hi, False) - MIN_GAIN_M:
         return None

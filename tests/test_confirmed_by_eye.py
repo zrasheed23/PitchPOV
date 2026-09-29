@@ -81,3 +81,50 @@ def test_confirmed_shots(name):
         post = (side * LINE_X, right * POST_Y)
         assert math.dist(ball[:2], post) <= want["post_m"], \
             f"{want['who']}: kicked {math.dist(ball[:2], post):.1f} m from the {want['post']} post"
+
+
+def at_kick(clip):
+    kick = clip.get("kickFrame", clip["goalFrame"])
+    return kick, clip["frames"][kick]
+
+
+@pytest.mark.parametrize("name", cases("shooters"))
+def test_confirmed_shooters(name):
+    want = CONFIRMED["shooters"][name]
+    clip = load(name)
+    names = {p["id"]: p["name"] for p in clip["players"]}
+    kick, f = at_kick(clip)
+    kicker = [names[c["p"]] for c in clip["contacts"] if c["f"] == kick]
+    nearest = min(f["p"], key=lambda q: math.dist(f["p"][q], f["b"][:2]))
+    assert kicker == [want["shooter"]], f"{want['who']}: kicked by {kicker}"
+    assert names[nearest] == want["shooter"], f"{want['who']}: {names[nearest]} is at the ball"
+
+
+@pytest.mark.parametrize("name", cases("shot_spots"))
+def test_confirmed_shot_spots(name):
+    want = CONFIRMED["shot_spots"][name]
+    clip = load(name)
+    _, f = at_kick(clip)
+    assert clip.get("shotSpot"), f"{want['who']}: no StatsBomb shot location"
+    d = math.dist(f["b"][:2], clip["shotSpot"])
+    assert d <= want["within_m"], f"{want['who']}: kicked {d:.1f} m from StatsBomb's shot location"
+    assert math.dist(f["p"][clip["scorerId"]], clip["shotSpot"]) <= want["within_m"] + 0.5
+
+
+def test_every_shot_is_the_scorers_from_statsbombs_spot():
+    """Every clip: the credited scorer kicks it, at the ball, within 2 m of
+    StatsBomb's shot location; or the clip is on the review list for it."""
+    index = {e["clip"]: e for e in json.loads((CLIPS / "index.json").read_text())}
+    bad = []
+    for name, entry in sorted(index.items()):
+        clip = load(name)
+        kick, f = at_kick(clip)
+        kicker = {c["p"] for c in clip["contacts"] if c["f"] == kick}
+        scorer = f["p"].get(clip["scorerId"])
+        ok = kicker == {clip["scorerId"]} and scorer is not None and f["b"] and math.dist(f["b"][:2], scorer) <= 1.2
+        if clip.get("shotSpot") and f["b"]:
+            ok = ok and math.dist(f["b"][:2], clip["shotSpot"]) <= 2.0
+        flagged = any("shooter" in r or "shot spot" in r for r in entry["review"])
+        if not ok and not flagged:
+            bad.append(f"{entry['scorer']} {entry['clock']} ({name})")
+    assert not bad, f"shot not the scorer's at StatsBomb's spot, and not flagged: {bad}"

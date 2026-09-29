@@ -304,7 +304,7 @@ def ease_player_to(player_frames, times, pid, f, spot, ease_s=MEET_EASE_S, catch
     return gap
 
 
-def meet_touches(ball, times, player_frames, contacts, end, skip=(), players=None, events=()):
+def meet_touches(ball, times, player_frames, contacts, end, skip=(), players=None, events=(), shot=None):
     """Every touch up to frame `end` has the player at the ball. Where the
     ball's position is well supported (a StatsBomb touch, or near the goal
     line) and he's more than MEET_M from it, the player is moved onto it
@@ -316,7 +316,8 @@ def meet_touches(ball, times, player_frames, contacts, end, skip=(), players=Non
     wrong in this clip (a flagged touch of his): then his other far touches
     are flagged too and the ball stays at StatsBomb's spot. The rest
     are left for the touch rule, which moves the ball. In place on
-    player_frames; returns ([(contact, metres moved)], flagged contacts, swaps)."""
+    player_frames; returns ([(contact, metres moved)], flagged contacts, swaps).
+    shot: (shooter id, kick frame, ball xy): no swap moves him off the shot."""
     moved, too_far, swaps = [], [], []
     wrong_track = set()  # players the tracked ball puts far from their own touches
     for _ in range(2):  # moves near each other nudge earlier touches: settle them
@@ -330,7 +331,7 @@ def meet_touches(ball, times, player_frames, contacts, end, skip=(), players=Non
             if d <= MEET_M or not (c.get("sb") or near_line):
                 continue
             if d > MEET_MAX_M and players is not None:
-                swap = try_swap(player_frames, players, pid, f, b[:2], events)
+                swap = try_swap(player_frames, players, pid, f, b[:2], events, shot)
                 if swap:
                     swaps.append((c, swap))
                     p = player_frames[f][pid]
@@ -463,6 +464,8 @@ def limit_player_speeds(player_frames, times, fixed, top=PLAYER_TOP_MPS):
 
 SETTLE_MPS = 1.0  # after the goal a correction fades (or grows) no faster than this
 SETTLE_RAMP_S = 1.0  # a player held still (the keeper after his dive) gets moving over this long
+SETTLE_ACCEL = 4.0  # m/s²: a correction still changing fast at the line slows to SETTLE_MPS no harder than this
+SETTLE_TAU_S = 0.5  # the correction heads for PFF's track over about this long (then SETTLE_MPS caps it)
 
 
 def settle_after_goal(player_frames, reference, times, start, hold=None):
@@ -471,7 +474,8 @@ def settle_after_goal(player_frames, reference, times, start, hold=None):
     eased back after his dive, a keeper let out of his area) would send a
     player gliding or sprinting across the pitch. From then on each player
     moves as his PFF track (`reference`: {id: (x, y)} per frame) does, and his
-    correction on top of it changes by at most SETTLE_MPS. hold: {player id:
+    correction on top of it changes by at most SETTLE_MPS, slowing to that
+    from however fast it was changing at no more than SETTLE_ACCEL. hold: {player id:
     last frame to leave alone} (the keeper through his dive); he gets moving
     from there over SETTLE_RAMP_S instead of setting off at full speed. In
     place; returns {player id: largest change (m)}."""
@@ -486,16 +490,31 @@ def settle_after_goal(player_frames, reference, times, start, hold=None):
         if prev is None or ref is None:
             continue
         off = (prev[0] - ref[0], prev[1] - ref[1])
+        # How fast the correction was changing going in: it slows from there
+        # (SETTLE_ACCEL) rather than stopping dead at the line.
+        before, ref_before = player_frames[s - 2].get(pid) if s >= 2 else None, reference[s - 2].get(pid) if s >= 2 else None
+        dt0 = times[s - 1] - times[s - 2] if s >= 2 else 0.0
+        v = ((off[0] - (before[0] - ref_before[0])) / dt0, (off[1] - (before[1] - ref_before[1])) / dt0) \
+            if before is not None and ref_before is not None and dt0 > 0 else (0.0, 0.0)
         worst = 0.0
         for k in range(s, len(player_frames)):
             p, r = player_frames[k].get(pid), reference[k].get(pid)
             if p is None or r is None:
                 break
             want = (p[0] - r[0], p[1] - r[1])
-            step = SETTLE_MPS * (times[k] - times[k - 1])
-            dx, dy = want[0] - off[0], want[1] - off[1]
-            d = math.hypot(dx, dy)
-            off = want if d <= step else (off[0] + dx / d * step, off[1] + dy / d * step)
+            dt = times[k] - times[k - 1]
+            if dt <= 0:
+                continue
+            vd = ((want[0] - off[0]) / SETTLE_TAU_S, (want[1] - off[1]) / SETTLE_TAU_S)
+            n = math.hypot(*vd)
+            if n > SETTLE_MPS:
+                vd = (vd[0] / n * SETTLE_MPS, vd[1] / n * SETTLE_MPS)
+            dv = (vd[0] - v[0], vd[1] - v[1])
+            n = math.hypot(*dv)
+            if n > SETTLE_ACCEL * dt:
+                dv = (dv[0] / n * SETTLE_ACCEL * dt, dv[1] / n * SETTLE_ACCEL * dt)
+            v = (v[0] + dv[0], v[1] + dv[1])
+            off = (off[0] + v[0] * dt, off[1] + v[1] * dt)
             new = (r[0] + off[0], r[1] + off[1])
             if pid in hold and times[k] - times[s - 1] < SETTLE_RAMP_S:
                 u = (times[k] - times[s - 1]) / SETTLE_RAMP_S
@@ -522,7 +541,7 @@ def _crossing(ball, times, start, side):
 
 
 def fly_shot(ball, times, player_frames, kick, shooter, part, side, penalty=False, cleared_after=None,
-             deflections=(), aim=None):
+             deflections=(), aim=None, anchored=False):
     """Fly the shot from the shooter's foot at frame `kick` to where the path
     (already aimed by the goal-mouth correction) crosses the goal line, then
     into the net. For a goal-line clearance (cleared_after set) the target is
@@ -530,7 +549,8 @@ def fly_shot(ball, times, player_frames, kick, shooter, part, side, penalty=Fals
     deflections: logged touches after the shot by the other team
     [{"f", "p", "b"}]; one is kept as a change of direction if the ball is
     within reach of him then. May move the shooter in player_frames (see
-    move_shooter). Returns (ball, info)."""
+    move_shooter). anchored: the ball at the kick is at StatsBomb's shot
+    location, so it stays there and the shooter comes to it. Returns (ball, info)."""
     out = list(ball)
     info = {"shot": False, "speed": None, "deflected": [], "at_foot_moved": 0.0, "shooter_moved": 0.0}
     if out[kick] is None:
@@ -553,7 +573,7 @@ def fly_shot(ball, times, player_frames, kick, shooter, part, side, penalty=Fals
         start = out[kick]
     else:
         p = player_frames[kick][shooter]
-        if math.hypot(out[kick][0] - p[0], out[kick][1] - p[1]) > SHOOTER_TRUST_M:
+        if math.hypot(out[kick][0] - p[0], out[kick][1] - p[1]) > (FOOT_M + 0.15 if anchored else SHOOTER_TRUST_M):
             info["shooter_moved"] = move_shooter(player_frames, times, shooter, kick, out[kick][:2], target[:2])
         start = touch_spot(player_frames[kick][shooter], out[kick], part, toward=target[:2])
     info["at_foot_moved"] = math.dist(start[:2], out[kick][:2])

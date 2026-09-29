@@ -18,6 +18,8 @@ any is flagged and goes on the review list:
   the side away from the ball. (Keepers narrow the angle.)
 - "shot spot": the ball at the kick more than SHOT_SPOT_M from where
   StatsBomb has the shot taken.
+- "shooter": the touch at the kick isn't the credited scorer's, or he's
+  more than TOUCH_M from the ball then.
 - "body pass": the ball goes through a player with no touch by him then
   (players are legs, torso and head: body_radius), up to the goal line; the
   keeper at the shot by his planned reaction (a block the ball can't clear,
@@ -29,7 +31,7 @@ import math
 from touch_rule import violations
 
 CHECKS = ("touch far", "no-touch turn", "keeper dive", "statsbomb missing", "crossing off", "sprint", "keeper wide",
-          "shot spot", "body pass")
+          "shot spot", "shooter", "body pass")
 TOUCH_M = 1.2
 MATCH_S = 0.5
 CROSS_M = 0.6
@@ -132,6 +134,15 @@ def check_clip(clip, statsbomb=(), placement=None):
         d = math.dist(fr[kick]["b"][:2], shot["xy"])
         if d > SHOT_SPOT_M:
             found["shot spot"].append(f"kicked {d:.1f} m from StatsBomb's shot location")
+
+    shot_touch = [c["p"] for c in clip.get("contacts", []) if c["f"] == kick]
+    scorer = fr[kick]["p"].get(clip.get("scorerId"))
+    if clip.get("scorerId") not in shot_touch:
+        found["shooter"].append(f"the kick is {', '.join(names.get(p, p) for p in shot_touch) or 'nobody'}'s, "
+                                f"not {names.get(clip.get('scorerId'))}'s")
+    elif fr[kick]["b"] and scorer and math.dist(fr[kick]["b"][:2], scorer) > TOUCH_M:
+        found["shooter"].append(f"{names.get(clip['scorerId'])} {math.dist(fr[kick]['b'][:2], scorer):.1f} m "
+                                f"from the ball at the kick")
 
     # The ball through a body, up to the goal line.
     touch_at = {}
