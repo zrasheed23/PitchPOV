@@ -407,6 +407,11 @@ def report(matches, results, problems, skipped, n_games, last_poses=None):
               f"{sum(len(s['three_sixty']['swaps']) for _, s in sw)} in {len(sw)} clips ({across} across teams):")
         top(sw, lambda s: len(s["three_sixty"]["swaps"]),
             lambda s: "; ".join(f"{x} <-> {y} {a}-{b}" for x, y, a, b, _ in s["three_sixty"]["swaps"][:3]), n=8)
+        smooth = [(g, s) for g, s in results if s["accel_smoothed"]]
+        print(f"corrections smoothed so no one accelerates harder than 10 m/s² (7.5 after the goal) where PFF's own "
+              f"track doesn't: {sum(len(s['accel_smoothed']) for _, s in smooth)} players in {len(smooth)} clips; most:")
+        top(smooth, lambda s: max(s["accel_smoothed"].values()),
+            lambda s: ", ".join(f"{n} {m:.1f} m" for n, m in sorted(s["accel_smoothed"].items(), key=lambda x: -x[1])[:2]))
         nudged = [(g, s) for g, s in results if s["nudges"]]
         print(f"players nudged so the ball doesn't pass through them: {sum(len(s['nudges']) for _, s in nudged)} in "
               f"{len(nudged)} clips; most:")

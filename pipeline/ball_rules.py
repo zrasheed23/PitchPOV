@@ -413,6 +413,111 @@ def clear_bodies(ball, times, player_frames, contacts, held, end, skip=None, rou
 
 
 PLAYER_TOP_MPS = 9.5  # no player runs faster (the report flags 10.5 over 0.2 s)
+ACCEL_TOP = 10.0  # m/s² over ACCEL_WINDOW: no correction makes a player speed up, slow or turn harder (the report flags 12)
+ACCEL_TOP_AFTER = 7.5  # after the goal (the report flags 8 there)
+ACCEL_WINDOW = 6  # frames (0.2 s), as the quality report measures it
+ACCEL_ROUNDS = 12  # each round widens a stretch that's still too sharp by ACCEL_WINDOW each side
+ACCEL_MAX_HALF_S = 2.5  # a re-drawn stretch reaches at most this far either side of where it broke the limit
+
+
+def _accel(track, times, k, w=ACCEL_WINDOW):
+    a, b, c = track[k - w], track[k], track[k + w]
+    if a is None or b is None or c is None or times[k] <= times[k - w] or times[k + w] <= times[k]:
+        return 0.0
+    v1 = ((b[0] - a[0]) / (times[k] - times[k - w]), (b[1] - a[1]) / (times[k] - times[k - w]))
+    v2 = ((c[0] - b[0]) / (times[k + w] - times[k]), (c[1] - b[1]) / (times[k + w] - times[k]))
+    return math.dist(v1, v2) / ((times[k + w] - times[k - w]) / 2)
+
+
+def clamped_spline(xs, ys, s0, s1):
+    """The cubic spline through (xs, ys) with slopes s0 and s1 at its ends (the
+    curve with the least bending that does so). Returns f(x)."""
+    m = len(xs) - 1
+    h = [xs[i + 1] - xs[i] for i in range(m)]
+    a, b, c, d = [0.0] * (m + 1), [0.0] * (m + 1), [0.0] * (m + 1), [0.0] * (m + 1)
+    b[0], c[0], d[0] = 2 * h[0], h[0], 6 * ((ys[1] - ys[0]) / h[0] - s0)
+    for i in range(1, m):
+        a[i], b[i], c[i] = h[i - 1], 2 * (h[i - 1] + h[i]), h[i]
+        d[i] = 6 * ((ys[i + 1] - ys[i]) / h[i] - (ys[i] - ys[i - 1]) / h[i - 1])
+    a[m], b[m], d[m] = h[m - 1], 2 * h[m - 1], 6 * (s1 - (ys[m] - ys[m - 1]) / h[m - 1])
+    for i in range(1, m + 1):  # Thomas algorithm
+        f = a[i] / b[i - 1]
+        b[i] -= f * c[i - 1]
+        d[i] -= f * d[i - 1]
+    M = [0.0] * (m + 1)
+    M[m] = d[m] / b[m]
+    for i in range(m - 1, -1, -1):
+        M[i] = (d[i] - c[i] * M[i + 1]) / b[i]
+
+    def at(x):
+        i = min(max(next((j for j in range(m) if x <= xs[j + 1]), m - 1), 0), m - 1)
+        u, v = xs[i + 1] - x, x - xs[i]
+        return (M[i] * u ** 3 / (6 * h[i]) + M[i + 1] * v ** 3 / (6 * h[i])
+                + (ys[i] / h[i] - M[i] * h[i] / 6) * u + (ys[i + 1] / h[i] - M[i + 1] * h[i] / 6) * v)
+    return at
+
+
+def limit_player_accels(player_frames, reference, times, fixed, top=ACCEL_TOP, after=None, top_after=ACCEL_TOP_AFTER):
+    """The corrections (every player's track minus his PFF track, `reference`)
+    never make him accelerate harder than `top`, unless PFF's own track does:
+    each stretch that breaks it has its correction re-drawn as the smoothest
+    curve (a clamped cubic spline) that meets the correction and its rate of
+    change at both ends and passes through his frames in fixed[pid] (touches,
+    a keeper's dive) unchanged; a stretch still too sharp is widened. From
+    frame `after` (the goal) the limit is top_after. In place; returns
+    {player id: largest change (m)}."""
+    n, w = len(player_frames), ACCEL_WINDOW
+    reach = ACCEL_MAX_HALF_S
+    changed = {}
+    for pid in {pid for frame in player_frames for pid in frame}:
+        track = [f.get(pid) for f in player_frames]
+        ref = [f.get(pid) for f in reference]
+        if any(p is None for p in track) or any(r is None for r in ref):
+            continue
+        corr = [(p[0] - r[0], p[1] - r[1]) for p, r in zip(track, ref)]
+        keep = fixed.get(pid, set())
+        start = list(corr)
+
+        def breaks(k):
+            limit = top_after if after is not None and k >= after else top
+            return _accel(track, times, k) > max(limit, _accel(ref, times, k) + 1.0)
+
+        bad = [k for k in range(w, n - w) if breaks(k)]
+        stretches = []  # [first, last, frame that broke the limit]
+        for k in bad:
+            if stretches and k - 2 * w <= stretches[-1][1]:
+                stretches[-1][1] = min(n - 1, k + 2 * w)
+            else:
+                stretches.append([max(0, k - 2 * w), min(n - 1, k + 2 * w), k])
+        for lo, hi, k0 in stretches:
+            for _ in range(ACCEL_ROUNDS):
+                if hi - lo < 4:
+                    break
+                knots = [lo] + [f for f in sorted(keep) if lo < f < hi] + [hi]
+
+                def slope(k, d):
+                    j0, j1 = max(k - 2, 0), min(k + 2, n - 1)
+                    return (start[j1][d] - start[j0][d]) / (times[j1] - times[j0])
+                for d in range(2):
+                    f = clamped_spline([times[k] for k in knots], [start[k][d] for k in knots], slope(lo, d), slope(hi, d))
+                    for k in range(lo + 1, hi):
+                        if k not in keep:
+                            c = list(corr[k])
+                            c[d] = f(times[k])
+                            corr[k] = tuple(c)
+                for k in range(lo, hi + 1):
+                    track[k] = (ref[k][0] + corr[k][0], ref[k][1] + corr[k][1])
+                if not any(breaks(k) for k in range(max(w, lo - w), min(n - w, hi + w + 1))):
+                    break
+                if times[k0] - times[lo] >= reach and times[hi] - times[k0] >= reach:
+                    break
+                lo, hi = max(0, lo - w), min(n - 1, hi + w)
+        worst = max(math.dist(a, b) for a, b in zip(corr, start))
+        if worst > 0.01:
+            for k in range(n):
+                player_frames[k][pid] = track[k]
+            changed[pid] = worst
+    return changed
 
 
 def limit_player_speeds(player_frames, times, fixed, top=PLAYER_TOP_MPS):

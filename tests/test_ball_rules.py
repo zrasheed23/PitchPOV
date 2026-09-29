@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "pipeline"))
 
-from ball_rules import enforce_touch_rule, find_kick, fly_shot
+from ball_rules import _accel, clamped_spline, enforce_touch_rule, find_kick, fly_shot, limit_player_accels
 from touch_rule import violations
 
 DT = 1 / 30
@@ -140,3 +140,23 @@ def test_a_player_the_tracked_ball_shows_to_be_elsewhere_never_pulls_the_ball_to
     assert placed in too_far and tracked in too_far
     _, too_far, _ = meet_touches(ball, times, frames, [placed], 99)
     assert not too_far  # on its own, the touch rule may still take the ball to him
+
+
+def test_clamped_spline_goes_through_its_points_with_the_given_end_slopes():
+    f = clamped_spline([0.0, 1.0, 2.0], [0.0, 1.0, 0.0], 1.0, -1.0)
+    assert all(math.isclose(f(x), y, abs_tol=1e-9) for x, y in ((0.0, 0.0), (1.0, 1.0), (2.0, 0.0)))
+    assert math.isclose((f(1e-4) - f(0.0)) / 1e-4, 1.0, abs_tol=1e-3)
+
+
+def test_limit_player_accels_smooths_a_correction_jolt_but_keeps_touches():
+    # PFF has him jogging; a correction jumps 1.5 m over three frames at frame 60,
+    # and frame 90 is a touch (held where it is).
+    ref = [{"p": (3.0 * t, 0.0)} for t in TIMES]
+    frames = [{"p": (3.0 * t, 0.0 if k < 60 else 1.5)} for k, t in enumerate(TIMES)]
+    for k in (59, 60, 61):
+        frames[k]["p"] = (3.0 * TIMES[k], 0.5 * (k - 58))
+    touch = frames[90]["p"]
+    limit_player_accels(frames, ref, TIMES, {"p": {90}})
+    track = [f["p"] for f in frames]
+    assert max(_accel(track, TIMES, k) for k in range(6, len(TIMES) - 6)) <= 10.0
+    assert frames[90]["p"] == touch

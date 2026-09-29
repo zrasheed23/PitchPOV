@@ -19,7 +19,8 @@ from accuracy import check_clip
 from ball_flight import anchor_frames, count_kinks, straighten_free_flight
 from ball_physics import apply_physics
 from ball_rules import (FOOT_M, MEET_MAX_M, SHOOTER_TRUST_M, clear_bodies, ease_player_to, enforce_touch_rule, find_kick,
-                        fly_shot, limit_player_speeds, meet_touches, move_shooter, settle_after_goal, shot_contact)
+                        fly_shot, limit_player_accels, limit_player_speeds, meet_touches, move_shooter,
+                        settle_after_goal, shot_contact)
 from contacts import align_contacts, find_contacts
 from dribble import follow_carries, rebuild_dribbles
 from estimate_gaps import estimate_gaps
@@ -791,6 +792,12 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     # After the goal nobody snaps back onto PFF's track: corrections fade (ball_rules.settle_after_goal).
     settled = settle_after_goal(player_frames, tracked_players, times, crossing, {defender: hold} if defender else None)
     sped = limit_player_speeds(player_frames, times, fixed)
+    # ...and no correction makes anyone accelerate harder than a footballer can (ball_rules.limit_player_accels).
+    smoothed = limit_player_accels(player_frames, tracked_players, times, fixed, after=crossing)
+    for pid, m in limit_player_speeds(player_frames, times, fixed).items():  # a re-drawn stretch stays under a sprint
+        sped[pid] = max(sped.get(pid, 0.0), m)
+    for pid, m in limit_player_accels(player_frames, tracked_players, times, fixed, after=crossing).items():
+        smoothed[pid] = max(smoothed.get(pid, 0.0), m)  # and whatever that cap sharpened is smoothed again
     nudges += clear_bodies(ball, times, player_frames, contacts, held, crossing,
                            skip={defender: shot["f"]} if defender else None, rounds=3)
 
@@ -877,6 +884,7 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         "met": [(players[c["p"]]["name"], c["f"], round(m, 2)) for c, m in met],
         "too_far": [(players[c["p"]]["name"], c["f"]) for c in too_far],
         "sped": {players[pid]["name"]: round(m, 2) for pid, m in sped.items()},
+        "accel_smoothed": {players[pid]["name"]: round(m, 2) for pid, m in smoothed.items()},
         "settled": {players[pid]["name"]: round(m, 2) for pid, m in settled.items()},
         "kick_shift": round(times[shot["f"]] - times[event_index], 2),
         "shot_move": round(shot_move, 2),
