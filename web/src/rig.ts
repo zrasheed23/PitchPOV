@@ -349,10 +349,12 @@ export function animateSlide(rig: Rig, k: number, side: 1 | -1) {
   const leadKnee = side > 0 ? rig.kneeR : rig.kneeL
   const fold = side > 0 ? rig.hipL : rig.hipR
   const foldKnee = side > 0 ? rig.kneeL : rig.kneeR
-  lead.rotation.x = on * 1.2 // straight out in front along the grass
+  // Leg angles are relative to the tilted body: the lead leg ends up along the
+  // grass (~90 degrees from hanging), the other folded back under him.
+  lead.rotation.x = on * (Math.PI / 2 - 1.05)
   leadKnee.rotation.x = -0.05
-  fold.rotation.x = on * 0.6
-  foldKnee.rotation.x = -on * 1.8 // tucked under
+  fold.rotation.x = -on * 0.7
+  foldKnee.rotation.x = -on * 1.6 // tucked under
   lead.rotation.z = fold.rotation.z = 0
   rig.shoulderL.rotation.x = rig.shoulderR.rotation.x = -on * 0.7 // arms back, hands to the ground
   rig.shoulderL.rotation.z = -ARM_REST_Z - on * 0.5

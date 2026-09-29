@@ -46,6 +46,13 @@ export default function App() {
   const broadcastCam = useMemo(() => (clip && track ? buildBroadcastCam(clip, track) : null), [clip, track])
   const playCam = useMemo(() => (clip && track ? buildPlayCam(clip, track, attackingSide(clip)) : null), [clip, track])
   if (import.meta.env.DEV) (window as unknown as { __playback: unknown }).__playback = playback
+  // Dev-only handle for the visual review script (web/scripts/visual_review.mjs):
+  // which clip is loaded, and switching camera presets (null: a camera the script sets).
+  if (import.meta.env.DEV)
+    (window as unknown as { __review: unknown }).__review = {
+      clip: clip ? `${clip.gameId}_${clip.gameEventId}` : null,
+      setPreset: (preset: View['preset']) => setView((v) => ({ preset, seq: v.seq + 1 })),
+    }
 
   // Load a goal's clip, then start it from the top with the default camera.
   const loadGoal = useCallback((g: GoalEntry) => {
