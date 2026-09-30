@@ -43,6 +43,24 @@ def find_assist(statsbomb, scorer, kick, contacts=()):
     return best, (touch["f"] if touch else best["f"])
 
 
+def pass_receivers(statsbomb, contacts=()):
+    """[(receiver id, frame the pass is played)] for every StatsBomb pass whose
+    next on-ball action by someone else is a teammate's (no offside from
+    throw-ins, corners and goal kicks)."""
+    evs = sorted((e for e in statsbomb if e["on_ball"]), key=lambda e: e["f"])
+    out = []
+    for n, e in enumerate(evs):
+        if e["type"] != "Pass" or ((e["raw"].get("pass") or {}).get("type") or {}).get("name") in NO_OFFSIDE:
+            continue
+        nxt = next((x for x in evs[n + 1:] if x["p"] != e["p"]), None)
+        if nxt is None or nxt["side"] != e["side"]:
+            continue
+        touch = min((c for c in contacts if c["p"] == e["p"] and abs(c["f"] - e["f"]) <= TOUCH_FRAMES),
+                    key=lambda c: abs(c["f"] - e["f"]), default=None)
+        out.append((nxt["p"], touch["f"] if touch else e["f"]))
+    return out
+
+
 def margin(at, ball_xy, team, scorer, side):
     """Metres the scorer is past the offside line at this moment (positive:
     offside), or None if he's in his own half (or anything is missing).

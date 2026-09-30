@@ -29,8 +29,9 @@ from goals import clip_name, find_goals
 from identity import blend_swap, try_swap
 from keepers import DIVE_HOLD_S, beat_keeper, defending_keeper, ease_to_freeze_frame, place_keepers, plan_dive
 from net import across_the_line
-from offside import ONSIDE_M, TOLERANCE_M as OFFSIDE_TOLERANCE_M, ease_onside, find_assist, margin as offside_margin, retime_pass
+from offside import ONSIDE_M, TOLERANCE_M as OFFSIDE_TOLERANCE_M, ease_onside, find_assist, margin as offside_margin, pass_receivers, retime_pass
 from penalty import find_keeper, pin_ball, place_players
+from separation import overlaps, separate
 from quality import check_quality
 from restarts import apply_restarts, find_restarts, redraw_roll_out
 from statsbomb import SAME_TOUCH_S, clip_events, match_events, merge_touches
@@ -583,11 +584,12 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         trusted = untracked or (freeze_fit is not None and freeze_fit <= FREEZE_AGREE_M and d <= SHOT_SPOT_TRUST_MAX_M)
         if untracked:
             rebuilt_from = untracked_shot(chosen, goal_index, shot_spot, sb_pre, goal["scorerId"])
+        # The ball at the kick is on StatsBomb's shot location (the shooter comes to it: fly_shot).
+        b = chosen[goal_index]
+        if b is None or math.dist(b[:2], shot_spot) > SHOT_BALL_M:
+            chosen[goal_index] = (shot_spot[0], shot_spot[1], b[2] if b else 0.11)
         if d <= MEET_MAX_M or trusted:
-            b = chosen[goal_index]
-            if b is None or math.dist(b[:2], shot_spot) > SHOT_SPOT_M:
-                chosen[goal_index] = (shot_spot[0], shot_spot[1], b[2] if b else 0.11)
-            if d > SHOT_SPOT_M:
+            if d > SHOT_BALL_M:
                 shot_move = ease_player_to(player_frames, times, goal["scorerId"], goal_index,
                                            (shot_spot[0] + (p[0] - shot_spot[0]) / d * FOOT_M,
                                             shot_spot[1] + (p[1] - shot_spot[1]) / d * FOOT_M))
@@ -763,9 +765,27 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     keepers = {pid: (1 if player_frames[goal_index][pid][0] > 0 else -1) for pid, p in players.items()
                if p["position"] == "GK" and pid in player_frames[goal_index]}
     # Every touch meets the player: players onto a well-supported ball (ball_rules.meet_touches).
+    # A far touch's blend mustn't put its receiver offside at the pass to him (offside.py).
+    team_of = {pid: p["team"] for pid, p in players.items()}
+    receivers = pass_receivers(sb_clip, contacts)
+    onside_before = {(r, pf): offside_margin(player_frames[pf], ball[pf][:2] if ball[pf] else None, team_of, r,
+                                             side if team_of[r] == scoring else -side)
+                     for r, pf in receivers}
+
+    def onside(pid, frames_now):
+        for (r, pf), m0 in onside_before.items():
+            if r != pid or ball[pf] is None:
+                continue
+            m = offside_margin(frames_now[pf], ball[pf][:2], team_of, r, side if team_of[r] == scoring else -side)
+            if m is not None and m > OFFSIDE_TOLERANCE_M and (m0 is None or m0 <= OFFSIDE_TOLERANCE_M or m > m0):
+                return False
+        return True
+
+    blended = []
     met, too_far, swaps = meet_touches(ball, times, player_frames, [c for c in contacts if c["f"] < shot["f"]] + clearance,
                                        len(frames) - 1, skip={r["f"] for r in restarts}, players=players, events=sb_clip,
-                                       shot=(shot["p"], shot["f"], ball[shot["f"]][:2]) if ball[shot["f"]] else None)
+                                       shot=(shot["p"], shot["f"], ball[shot["f"]][:2]) if ball[shot["f"]] else None,
+                                       onside=onside, blended=blended)
     # A touch just before the kick can ease the shooter off the ball: back onto it.
     anchored = shot_spot is not None and not direct and not penalty
     kb, kp = ball[shot["f"]], player_frames[shot["f"]].get(shot["p"])
@@ -842,12 +862,22 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     sped = limit_player_speeds(player_frames, times, fixed)
     # ...and no correction makes anyone accelerate harder than a footballer can (ball_rules.limit_player_accels).
     smoothed = limit_player_accels(player_frames, tracked_players, times, fixed, after=crossing)
+    # Nobody stands inside anyone else (separation.py); touches, the shooter at the kick, the
+    # keeper's dive and players placed from a 360 frame stay where they are.
+    locked = {pid: set(fs) for pid, fs in fixed.items()}
+    locked.setdefault(shot["p"], set()).update(range(shot["f"] - 3, shot["f"] + 4))
+    for fr in frames360:
+        for pid in three_sixty.match_frame(fr, player_frames[fr["f"]], players):
+            locked.setdefault(pid, set()).add(fr["f"])
+    overlaps_before = len({k for k, *_ in overlaps(player_frames, ball, players)})
+    separated = separate(player_frames, times, ball, players, locked)
     for pid, m in limit_player_speeds(player_frames, times, fixed).items():  # a re-drawn stretch stays under a sprint
         sped[pid] = max(sped.get(pid, 0.0), m)
     for pid, m in limit_player_accels(player_frames, tracked_players, times, fixed, after=crossing).items():
         smoothed[pid] = max(smoothed.get(pid, 0.0), m)  # and whatever that cap sharpened is smoothed again
     nudges += clear_bodies(ball, times, player_frames, contacts, held, crossing,
                            skip={defender: shot["f"]} if defender else None, rounds=3)
+    overlaps_after = len({k for k, *_ in overlaps(player_frames, ball, players)})
 
     # Defenders' blocks, clearances and tackles: slides or standing, from the measured data (defense.py).
     measured = paths[ball_source]
@@ -942,6 +972,9 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         "settled": {players[pid]["name"]: round(m, 2) for pid, m in settled.items()},
         "kick_shift": round(times[shot["f"]] - times[event_index], 2),
         "shot_move": round(shot_move, 2),
+        "separated": {players[pid]["name"]: round(m, 2) for pid, m in separated.items() if m > 0.01},
+        "overlap_frames": (overlaps_before, overlaps_after),  # frames with two players too close, before/after separate
+        "blended": [(players[c["p"]]["name"], c["f"], d, h) for c, d, h in blended],  # far touches: track blended onto the ball
         "offside_moved": round(offside_moved, 2),  # the scorer eased back onside at the assist (m)
         "pass_retimed": pass_retimed,  # the assist moved this much earlier (s) so he can make his run
         "shot_part": (shot["b"], part_from_sb),  # the shot's body part, and whether StatsBomb changed it
@@ -981,7 +1014,8 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     return clip, stats
 
 
-SHOT_SPOT_M = 2.0
+SHOT_SPOT_M = 2.0  # the tracked ball never this near StatsBomb's shot location: an untracked shot
+SHOT_BALL_M = 1.0  # the ball at the kick farther than this from it is put on it (and the shooter with it)
 FREEZE_AGREE_M = 2.0  # freeze frame to tracking, median: StatsBomb's shot is lined up with the tracking
 FREEZE_MIN_PLAYERS = 5
 SHOT_SPOT_TRUST_MAX_M = 20.0

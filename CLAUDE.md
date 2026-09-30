@@ -2,7 +2,7 @@
 
 A static web app that replays every 2022 World Cup goal in 3D from real tracking data. Pick a player, pick a goal, and watch a ~21.5-second clip (15 s before the shot, 6.5 s after) with pause, scrub, 0.25x/0.5x/1x speed, and an orbit camera with presets. Full brief: [docs/brief.md](docs/brief.md).
 
-**Status:** Weekends 1–4 done: 166 goals play in the 3D viewer (branch `weekend-2-3d`, not merged). Everything below through "Sep 28 night" (event types, offside, low shots, visual review) is committed. Next: Zayd rewatches the clips listed at the end of "Sep 28 night", work down `clips/quality_report.md` (ranked; 45 of 166 pass everything) and the accuracy report's 21 flagged clips, fix what he reports, merge, then Weekend 5 (mobile check, Vercel deploy, README, demo GIF).
+**Status:** Weekends 1–4 done: 166 goals play in the 3D viewer (branch `weekend-2-3d`, not merged). Everything below through "Sep 29" (touches meet their players, separation) is committed. Next: Zayd rewatches the clips listed at the end of "Sep 28 night", work down `clips/quality_report.md` (ranked; 49 of 166 pass everything) and the accuracy report's 9 flagged clips, fix what he reports, merge, then Weekend 5 (mobile check, Vercel deploy, README, demo GIF).
 
 ## How Zayd works
 
@@ -107,6 +107,14 @@ Quality report: 40 → 45 of 166 pass every check (new check "offside at assist"
 - **Visual review** (`web/scripts/visual_review.mjs`, `pipeline/review_sheets.py`): `cd web && node scripts/visual_review.mjs CLIP ... | --all` (dev server + installed Google Chrome, headless, `playwright-core`), then `python pipeline/review_sheets.py`: one contact sheet per clip in `clips/visual_review/`, broadcast and behind-the-player shots at every touch/defensive action in the last 8 s, the kick and the crossing, labelled with the expected action. Claude reads the sheets and writes `clips/visual_review.md`. ~8.6 s per clip (24 min for all 166); reviewing all 166 is ~350k image tokens, about an hour. First run (22 clips): 17 pass, 1 check (Horta 04:52), 4 fail (Valencia 48:44 keeper and shooter merged; Guerreiro 54:55, Leão 79:21, de Jong 48:55: a named player metres from the ball, all already "touch far"/"carry" in the quality report).
 - Found, not fixed: two players' centres under 0.4 m apart within 0.5 s of the kick in 66 clips (nothing keeps players apart; Valencia 48:44's keeper is 0.6 m from the shooter).
 - Rewatch after this: Mbappé 80:58 (sequence), Dia 40:20 (slide), Aboubakar 91:47 (onside, cross earlier), Rashford 67:40 (through the legs), Ramos 66:11 and Ziyech 03:28 (chips), Al-Dawsari 52:43 (Romero sliding block, Di María slide), Valencia 48:44 (keeper merged with Valencia at the kick).
+
+## Sep 29: touches meet their players, player separation
+
+Quality report: 45 → 49 of 166 pass every check; accuracy review list 21 → 9; shot origin 15 → 0.
+
+- **Far touches** (`meet_touches`, `blend_to_touch` in `ball_rules.py`): a StatsBomb touch more than 5 m from its player, with the tracked ball backing it (or his track already shown wrong), first tries a label swap (`try_swap`); otherwise his track is blended onto the ball, the correction easing in and out over 1, 1.5, 2 or 3 s either side (the shortest that works), keeping his run. Not if he'd run faster than 9 m/s over 0.2 s (or than his own track already does), or a receiver would be put offside at the pass to him (`offside.pass_receivers`); then it's listed (build_all). 23 such touches: 0 swaps, 15 blends in 12 clips (Félix in Guerreiro 54:55, Bruno Fernandes in Leão 79:21), 8 listed: Messi in Al-Shehri 47:39 (19 m), Diatta in Dia 40:20 (23 m), Dumfries and Klaassen in de Jong 48:55 (15-18 m), Stones in Rashford 67:40 (21-28 m).
+- **Separation** (`separation.py`, after the first speed/acceleration limits): player centres ≥ 0.6 m apart, ≥ 0.4 m for two opponents both within 1.5 m of the ball. The less supported player moves: never at a touch, the shooter at the kick, the keeper's dive or a frame where a 360 frame places him; else the one farther from the ball. Pushes are held ±0.3 s, smoothed (σ 0.25 s) and fade out at his locked frames. Frames too close 30,227 → 1,242 (165 → 88 clips; the rest are two locked players); clips with two centres < 0.4 m within 0.5 s of the kick 66 → 11.
+- **Ball on StatsBomb's shot location** (`SHOT_BALL_M` in `cut_clip.py`): the ball at the kick goes on it when the tracked ball is more than 1 m off (was 2 m, and only when the shooter's own track was near it). Valencia 48:44 was kicked 1.3 m from it, toward Noppert (on his freeze-frame spot), so the two stood 0.6 m apart: now 1.28 m, as StatsBomb has them (fixture `separations`). `SHOT_SPOT_M` (2 m) still decides an untracked shot.
 
 ## Architecture
 

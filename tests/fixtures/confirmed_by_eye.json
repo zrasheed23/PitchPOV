@@ -31,6 +31,10 @@
     "3845_6594882.json": {"who": "Cody Gakpo 25:54 v Qatar: Gakpo shoots (an identity swap used to give it to Timber)",
                           "shooter": "Cody Gakpo"}
   },
+  "separations": {
+    "3830_6538457.json": {"who": "Enner Valencia 48:44 v Netherlands: Noppert and Valencia apart at the kick (StatsBomb: 1.2 m)",
+                          "a": "Andries Noppert", "b": "Enner Valencia", "min_m": 1.0}
+  },
   "shot_spots": {
     "3837_6549996.json": {"who": "Zakaria Aboukhlal 91:50 v Belgium: tap-in near the six-yard box, not a 17 m shot",
                           "within_m": 2.0}

@@ -132,3 +132,13 @@ def test_every_shot_is_the_scorers_from_statsbombs_spot():
         if not ok and not flagged:
             bad.append(f"{entry['scorer']} {entry['clock']} ({name})")
     assert not bad, f"shot not the scorer's at StatsBomb's spot, and not flagged: {bad}"
+
+
+@pytest.mark.parametrize("name", cases("separations"))
+def test_confirmed_separations(name):
+    want = CONFIRMED["separations"][name]
+    clip = load(name)
+    ids = {p["name"]: p["id"] for p in clip["players"]}
+    _, f = at_kick(clip)
+    d = math.dist(f["p"][ids[want["a"]]], f["p"][ids[want["b"]]])
+    assert d >= want["min_m"], f"{want['who']}: {d:.2f} m apart"

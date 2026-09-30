@@ -413,6 +413,17 @@ def report(matches, results, problems, skipped, n_games, last_poses=None):
         lobs = [(g, s) for g, s in results if s["shot"].get("lob")]
         print(f"lobs (StatsBomb technique Lob) flown as chips: {len(lobs)}: "
               + ", ".join(f"{g['scorer']} {g['clock']}" for g, _ in lobs))
+        bl = [(g, s) for g, s in results if s["blended"]]
+        print(f"far touches with the tracked ball backing StatsBomb, his track blended onto the ball: "
+              f"{sum(len(s['blended']) for _, s in bl)} in {len(bl)} clips; still too far (a sprint or offside needed): "
+              f"{sum(len(s['too_far']) for _, s in results)}:")
+        for g, s in results:
+            if s["too_far"]:
+                print(f"  {clip_name(g)}  {g['scorer']} {g['clock']}  " + ", ".join(f"{n} frame {f}" for n, f in s["too_far"]))
+        ov = [s["overlap_frames"] for _, s in results]
+        print(f"players too close (0.6 m; 0.4 m for opponents at the ball): {sum(1 for a, _ in ov if a)} clips / "
+              f"{sum(a for a, _ in ov)} frames before separating, {sum(1 for _, b in ov if b)} / {sum(b for _, b in ov)} after; "
+              f"{sum(len(s['separated']) for _, s in results)} players moved")
         low = [g for g, s in results if s["shot"].get("low_drive")]
         print(f"low shots driven along the grass (StatsBomb crossing <= 0.3 m, foot, from the ground): {len(low)} clips")
         onside = [(g, s) for g, s in results if s["offside_moved"]]

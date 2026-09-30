@@ -307,7 +307,46 @@ def ease_player_to(player_frames, times, pid, f, spot, ease_s=MEET_EASE_S, catch
     return gap
 
 
-def meet_touches(ball, times, player_frames, contacts, end, skip=(), players=None, events=(), shot=None):
+BLEND_HALF_S = (1.0, 1.5, 2.0, 3.0)  # a far touch's blend, either side, tried shortest first
+BLEND_TOP_MPS = 9.0  # ...as long as he's no faster than this over 0.2 s (or than his own track already is)
+
+
+def _top_speed(track, times, lo, hi, w=6):
+    best = 0.0
+    for k in range(max(lo, w), min(hi, len(track) - 1) + 1):
+        a, b = track[k - w], track[k]
+        if a is not None and b is not None and times[k] > times[k - w]:
+            best = max(best, math.dist(a, b) / (times[k] - times[k - w]))
+    return best
+
+
+def blend_to_touch(player_frames, times, pid, f, spot, onside=None):
+    """Blend a player's track onto `spot` at his touch (frame f), keeping his run
+    otherwise: the correction eases in and out over BLEND_HALF_S either side,
+    the shortest that keeps him under BLEND_TOP_MPS (and, if given, onside(pid,
+    player_frames) true). In place; returns the half-window used (s), or None
+    (nothing changed)."""
+    p = player_frames[f][pid]
+    off = (spot[0] - p[0], spot[1] - p[1])
+    before = [fr.get(pid) for fr in player_frames]
+    for half in BLEND_HALF_S:
+        ks = [k for k in range(len(player_frames)) if abs(times[k] - times[f]) < half and pid in player_frames[k]]
+        lo, hi = ks[0], ks[-1]
+        allowed = max(BLEND_TOP_MPS, _top_speed(before, times, lo, hi + 6))
+        for k in ks:
+            u = 1 - abs(times[k] - times[f]) / half
+            w = u * u * (3 - 2 * u)
+            player_frames[k][pid] = (before[k][0] + off[0] * w, before[k][1] + off[1] * w)
+        after = [fr.get(pid) for fr in player_frames]
+        if _top_speed(after, times, lo, hi + 6) <= allowed + 0.05 and (onside is None or onside(pid, player_frames)):
+            return half
+        for k in ks:
+            player_frames[k][pid] = before[k]
+    return None
+
+
+def meet_touches(ball, times, player_frames, contacts, end, skip=(), players=None, events=(), shot=None, onside=None,
+                 blended=None):
     """Every touch up to frame `end` has the player at the ball. Where the
     ball's position is well supported (a StatsBomb touch, or near the goal
     line) and he's more than MEET_M from it, the player is moved onto it
@@ -320,8 +359,11 @@ def meet_touches(ball, times, player_frames, contacts, end, skip=(), players=Non
     are flagged too and the ball stays at StatsBomb's spot. The rest
     are left for the touch rule, which moves the ball. In place on
     player_frames; returns ([(contact, metres moved)], flagged contacts, swaps).
-    shot: (shooter id, kick frame, ball xy): no swap moves him off the shot."""
+    shot: (shooter id, kick frame, ball xy): no swap moves him off the shot.
+    onside(pid, player_frames): False if a blend put a receiver offside at the
+    pass to him. blended: a list collecting (contact, metres, half-window) blends."""
     moved, too_far, swaps = [], [], []
+    blended = [] if blended is None else blended
     wrong_track = set()  # players the tracked ball puts far from their own touches
     for _ in range(2):  # moves near each other nudge earlier touches: settle them
         for c in contacts:
@@ -344,11 +386,20 @@ def meet_touches(ball, times, player_frames, contacts, end, skip=(), players=Non
             if d > MEET_MAX_M:
                 # Only StatsBomb puts the ball there (the tracked ball doesn't): its spot
                 # is the weak link, so the touch rule takes the ball to him. With the
-                # tracked ball there too, the player's track is wrong: flagged.
+                # tracked ball there too, his track is wrong: StatsBomb says he touched it
+                # then and the tracked ball says where, so his track is blended onto it
+                # (blend_to_touch), unless that needs a sprint or puts him offside: flagged.
                 if c.get("tr"):
                     wrong_track.add(pid)
-                if (c.get("tr") or pid in wrong_track) and c not in too_far:
-                    too_far.append(c)
+                if c.get("tr") or pid in wrong_track:
+                    spot = (b[0] - (b[0] - p[0]) / d * FOOT_M, b[1] - (b[1] - p[1]) / d * FOOT_M)
+                    how = blend_to_touch(player_frames, times, pid, f, spot, onside)
+                    if how is not None:
+                        blended.append((c, round(d, 1), how))
+                        if c in too_far:
+                            too_far.remove(c)
+                    elif c not in too_far:
+                        too_far.append(c)
                 continue
             # His centre just behind the ball, on the side he's coming from.
             spot = (b[0] - (b[0] - p[0]) / d * FOOT_M, b[1] - (b[1] - p[1]) / d * FOOT_M)
