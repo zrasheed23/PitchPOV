@@ -4,7 +4,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "pipeline"))
 
-from ball_rules import _accel, clamped_spline, enforce_touch_rule, find_kick, fly_shot, limit_player_accels
+from ball_rules import (BLEND_TOP_MPS, FOOT_M, _accel, clamped_spline, close_touch_gaps, enforce_touch_rule, find_kick, fly_shot,
+                        limit_player_accels)
 from touch_rule import violations
 
 DT = 1 / 30
@@ -160,3 +161,16 @@ def test_limit_player_accels_smooths_a_correction_jolt_but_keeps_touches():
     track = [f["p"] for f in frames]
     assert max(_accel(track, TIMES, k) for k in range(6, len(TIMES) - 6)) <= 10.0
     assert frames[90]["p"] == touch
+
+
+def test_a_pass_arriving_behind_him_is_met_at_his_foot_not_pulled_onto_it():
+    # He runs at 8 m/s; the pass reaches the touch 1.1 m behind him. He's eased
+    # back onto it (no faster than BLEND_TOP_MPS), the ball stays where it is.
+    ball = [(8.0 * t - 1.1, 0.0, 0.0) for t in TIMES]
+    frames = [{"p": (8.0 * t, 0.0)} for t in TIMES]
+    contacts = [{"f": 90, "p": "p", "b": "F"}]
+    moved, left = close_touch_gaps(ball, TIMES, frames, contacts, [], len(TIMES) - 1)
+    assert left == 0 and moved
+    assert abs(math.dist(ball[90][:2], frames[90]["p"]) - FOOT_M) < 0.01
+    speeds = [math.dist(frames[k]["p"], frames[k - 1]["p"]) / (TIMES[k] - TIMES[k - 1]) for k in range(1, len(TIMES))]
+    assert max(speeds) <= BLEND_TOP_MPS + 0.1

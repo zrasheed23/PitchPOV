@@ -420,6 +420,10 @@ def report(matches, results, problems, skipped, n_games, last_poses=None):
         for g, s in results:
             if s["too_far"]:
                 print(f"  {clip_name(g)}  {g['scorer']} {g['clock']}  " + ", ".join(f"{n} frame {f}" for n, f in s["too_far"]))
+        gc = [m for _, s in results for _, _, m in s["gaps_closed"]]
+        print(f"touches met at the foot once the ball path is final (ball > {0.5} m from his centre): {len(gc)} in "
+              f"{sum(1 for _, s in results if s['gaps_closed'])} clips, median {sorted(gc)[len(gc) // 2] if gc else 0} m, "
+              f"most {max(gc, default=0)} m; left (would need a sprint): {sum(s['gaps_left'] for _, s in results)}")
         ov = [s["overlap_frames"] for _, s in results]
         print(f"players too close (0.6 m; 0.4 m for opponents at the ball): {sum(1 for a, _ in ov if a)} clips / "
               f"{sum(a for a, _ in ov)} frames before separating, {sum(1 for _, b in ov if b)} / {sum(b for _, b in ov)} after; "

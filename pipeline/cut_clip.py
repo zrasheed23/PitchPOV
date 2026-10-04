@@ -18,7 +18,8 @@ from goal_mouth import correct_goal_mouth, goal_side
 from accuracy import check_clip
 from ball_flight import anchor_frames, count_kinks, straighten_free_flight
 from ball_physics import apply_physics
-from ball_rules import (FOOT_M, MEET_MAX_M, SHOOTER_TRUST_M, clear_bodies, ease_player_to, enforce_touch_rule, find_kick,
+from ball_rules import (FOOT_M, MEET_MAX_M, SHOOTER_TRUST_M, clear_bodies, close_touch_gaps, ease_player_to,
+                        enforce_touch_rule, find_kick,
                         fly, fly_shot, limit_player_accels, limit_player_speeds, meet_touches, move_shooter,
                         settle_after_goal, shot_contact)
 from contacts import align_contacts, find_contacts
@@ -832,6 +833,10 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     ball, contacts, rule_counts = enforce_touch_rule(ball, times_out, players_out, contacts, held, shot["f"],
                                                      keepers, moved=redraw, keep=[r["f"] for r in restarts],
                                                      leave=too_far, add_touches=not sb_clip)
+    # With the ball path final, every toucher meets it at his foot (ball_rules.close_touch_gaps):
+    # the viewer would otherwise pull the ball the last metre onto him in a tenth of a second.
+    gaps_closed, gaps_left = close_touch_gaps(ball, times, player_frames, contacts, held, shot["f"] - 1,
+                                              skip={r["f"] for r in restarts})
     # How the scorer strikes it: StatsBomb's shot technique (volleys.py).
     final_shot = next((c for c in contacts if (c["f"], c["p"]) == (shot["f"], shot["p"])), None)
     if final_shot is None:
@@ -987,6 +992,8 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         "kick_shift": round(times[shot["f"]] - times[event_index], 2),
         "shot_move": round(shot_move, 2),
         "separated": {players[pid]["name"]: round(m, 2) for pid, m in separated.items() if m > 0.01},
+        "gaps_closed": [(c["f"], players[c["p"]]["name"], m) for c, m in gaps_closed],
+        "gaps_left": gaps_left,
         "overlap_frames": (overlaps_before, overlaps_after),  # frames with two players too close, before/after separate
         "blended": [(players[c["p"]]["name"], c["f"], d, h) for c, d, h in blended],  # far touches: track blended onto the ball
         "offside_moved": round(offside_moved, 2),  # the scorer eased back onside at the assist (m)

@@ -407,6 +407,52 @@ def meet_touches(ball, times, player_frames, contacts, end, skip=(), players=Non
     return moved, too_far, swaps
 
 
+GAP_TO = {"H": 0.1, "X": 0.45}  # the ball from his centre at a touch: head, hands; feet FOOT_M
+GAP_SLACK_M = 0.15  # a touch this much farther than that is closed (the viewer pulls the rest onto the foot)
+GAP_ROUNDS = 3  # moves near each other nudge earlier touches: settle them
+
+
+def close_touch_gaps(ball, times, player_frames, contacts, held, end, skip=()):
+    """With the ball path final, every toucher meets the ball where it is: his
+    centre eased (ease_player_to) to FOOT_M behind it (GAP_TO for head and
+    hands), instead of the viewer pulling the ball the last metre onto his foot
+    in a tenth of a second. Only where that keeps him no faster than
+    BLEND_TOP_MPS (or his own track's top speed) around the touch. Touches in
+    carries and dead balls (held), after `end`, and at frames in skip are left.
+    In place; returns ([(contact, metres)], touches left because of the speed)."""
+    dead = set()
+    for a, b, _ in held:
+        dead.update(range(a - WINDOW, b + WINDOW + 1))
+    moved, left = {}, set()
+    for _ in range(GAP_ROUNDS):
+        for c in contacts:
+            f, pid = c["f"], c["p"]
+            if f > end or f in skip or f in dead or ball[f] is None or pid not in player_frames[f]:
+                continue
+            b, p = ball[f], player_frames[f][pid]
+            d = math.hypot(b[0] - p[0], b[1] - p[1])
+            to = GAP_TO.get(c.get("b"), FOOT_M)
+            if d <= to + GAP_SLACK_M:
+                continue
+            spot = (b[0] - (b[0] - p[0]) / d * to, b[1] - (b[1] - p[1]) / d * to)
+            before = [fr.get(pid) for fr in player_frames]
+            gap = ease_player_to(player_frames, times, pid, f, spot)
+            ease = ease_time(gap, MEET_EASE_S, MEET_CATCHUP_MPS)
+            lo = next(k for k in range(len(times)) if times[k] >= times[f] - ease)
+            hi = max(k for k in range(len(times)) if times[k] <= times[f] + ease)
+            after = [fr.get(pid) for fr in player_frames]
+            if _top_speed(after, times, lo, hi + 6) > max(BLEND_TOP_MPS, _top_speed(before, times, lo, hi + 6)) + 0.05:
+                for k, xy in enumerate(before):
+                    if xy is not None:
+                        player_frames[k][pid] = xy
+                left.add((f, pid))
+                continue
+            left.discard((f, pid))
+            key = (f, pid)
+            moved[key] = moved.get(key, 0.0) + gap
+    return [(c, round(moved[(c["f"], c["p"])], 2)) for c in contacts if (c["f"], c["p"]) in moved], len(left)
+
+
 BODY_R = ((0.9, 0.18), (1.5, 0.22), (1.85, 0.12))  # legs, torso, head (as accuracy.py)
 BALL_R = 0.11
 BODY_CLEAR_M = 0.1
