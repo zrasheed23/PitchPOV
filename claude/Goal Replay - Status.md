@@ -1,6 +1,6 @@
 # PitchPOV (Goal Replay): where things stand
 
-Updated Sep 30, 2026 (handoff for a new chat)
+Updated Oct 3, 2026 (handoff for a new chat)
 
 Repo: `~/Goal-Replay/Goal-Replay` on Zayd's Mac. GitHub: `zrasheed23/PitchPOV` (public). Work on branch `weekend-2-3d`. GitHub `main` only has a README-only commit; merge pending. Leftover scratch worktree: `git worktree prune`.
 
@@ -12,7 +12,16 @@ Zayd makes code changes with Claude Code in the terminal on the Mac; this chat w
 - Confirmed-by-eye outcomes pinned in `tests/fixtures/confirmed_by_eye.json`.
 - Quality report per clip: `clips/quality_report.md` (ranked) and `clips/quality.json`. Visual review: `clips/visual_review.md` + contact sheets (local only, clips/ is gitignored).
 
-## Last run (Sep 30): 0 problems, 163 tests (typecheck not rerun, no viewer changes)
+## Last run (Oct 3): 0 problems, 165 tests, typecheck clean
+- Clips passing every quality check: 49 → 69 (carry check now 2.5 m, stricter). Accuracy review list: 9 → 3 (Kane 47:16, Doan 74:46, Richarlison 72:54: StatsBomb timing/location conflicts).
+- StatsBomb 360: a frame that names a player counts on its own; anonymous matches that contradict it are dropped. Tracks corrected 609 → 719 (138 clips); 85 label swaps in 50 clips, 0 across teams. The 8 listed far touches (Messi, Diatta, Dumfries, Klaassen x2, Stones x2) all within 0.7 m now.
+- The smoothed ball feed (pinned to PFF's own player) no longer counts as "the tracked ball agrees with the player". Dia 40:20: the raw feed has no ball for 5 s; Diatta's receipt is at StatsBomb's spot now.
+- Guerreiro 54:55: the snap was the viewer pulling the ball 1 m onto his foot in 0.12 s (ball 1.12 m behind him at his receipt), not the Félix blend. New rule: every toucher meets the ball at his foot once the ball path is final (no faster than 9 m/s). Snapping touches 383 → 38 of ~2,070.
+- Carries: a StatsBomb carry is followed when the tracked ball is at StatsBomb's start or at the carrier's feet; viewer carries keep the ball at his feet in the data. Clips with the ball > 2.5 m from a carrier: 18 → 5.
+- Leão 79:21: PFF had Bruno Fernandes 14–20 m behind the (measured, correct) ball. 360 frames at his receipt and pass correct his whole track; the 14.2 m blend is gone; he stays within 0.65 m of the ball. The defenders do run back (5–9 m/s, closing 10 → 3.6 m); they looked frozen because the ball ran next to them with no carrier.
+- Tried and reverted (net worse): pinning the goal's freeze frame to the kick; median-filtering carry offsets.
+
+## Previous run (Sep 30): 0 problems, 163 tests (typecheck not rerun, no viewer changes)
 - Players far from own touch (>5 m, tracked ball backs StatsBomb): 23 touches. 0 label swaps (existing swap rule runs first), 15 blended onto the ball (12 clips; shortest 1–3 s window keeping him ≤9 m/s and onside), 8 left and listed.
   - Guerreiro 54:55: João Félix blended at both touches (7.7–7.8 m).
   - Leão 79:21: Bruno Fernandes blended at his receipt (14.2 m). His 11.1 m/s sprint was there before this change.
@@ -32,14 +41,14 @@ Zayd makes code changes with Claude Code in the terminal on the Mac; this chat w
 - Zayd's watch: all goals looked good.
 
 ## Next session
-1. Watch: Guerreiro 54:55 (Félix blend), Leão 79:21 (Bruno blend, 11.1 m/s run), Valencia 48:44 (shot starts 1.3 m further back). Pin the good ones in `confirmed_by_eye.json`.
-2. Decide on the 8 listed touches (likely via StatsBomb 360 run).
-3. Then StatsBomb 360 run or roadmap A.
+1. Watch: Guerreiro 54:55 (first touch), Leão 79:21 (Bruno's carry), Gnabry 09:31 (Musiala's carry), Mac Allister 45:51 (Molina), Al-Shehri 47:39 (Messi), Dia 40:20 (Diatta), de Jong 48:55 (Dumfries, Klaassen), Rashford 67:40 (Stones), Doan 74:46 (Mitoma's carry). Pin the good ones in `confirmed_by_eye.json`.
+2. Candidate rules: StatsBomb events at the same instant (Kane 47:16: block and receipt 17 m apart); a touch timed to "ball nearest StatsBomb's spot" landing mid-flight (Vinícius in Richarlison 72:54); the goal's freeze frame riding the clip-wide 360 time fit.
+3. Then roadmap A.
 
 ## Known open issues
 - 88 clips still have some separation-rule frames (mostly locked pairs); 11 clips have <0.4 m overlap near the kick.
-- 8 listed touches above (5 clips).
-- Accuracy review list: 9 clips.
+- Accuracy review list: 3 clips (Kane 47:16, Doan 74:46, Richarlison 72:54).
+- 38 snapping touches left (29 would need a sprint to meet; 9 turn 2 frames before contact).
 - Horta 04:52 unconfirmed.
 
 ## Roadmap
