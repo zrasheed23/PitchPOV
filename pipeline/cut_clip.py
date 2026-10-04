@@ -23,7 +23,7 @@ from ball_rules import (FOOT_M, MEET_MAX_M, SHOOTER_TRUST_M, clear_bodies, close
                         fly, fly_shot, limit_player_accels, limit_player_speeds, meet_touches, move_shooter,
                         settle_after_goal, shot_contact)
 from contacts import align_contacts, find_contacts
-from dribble import follow_carries, rebuild_dribbles
+from dribble import ball_at_feet, follow_carries, rebuild_dribbles
 from defense import plan_defense
 from estimate_gaps import estimate_gaps
 from goals import clip_name, find_goals
@@ -727,8 +727,10 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
                                                                 sb_carries if any(e["on_ball"] for e in sb_clip) else None)
     contacts = sorted(contacts + dribble_touches, key=lambda c: c["f"])
     touch_frames = [c["f"] for c in contacts]
-    # Rebuilt dribbles are already real pushes: hold every frame of them in place below.
-    held = touch_frames + [k for a, b in dribbles for k in range(a, b + 1)]
+    # Rebuilt dribbles are already real pushes, and a carry left to the viewer keeps the
+    # tracked ball at his feet: hold every frame of them in place below.
+    held = touch_frames + [k for a, b in dribbles for k in range(a, b + 1)] + [k for a, b, _ in carries
+                                                                            for k in range(a, b + 1)]
     # Between touches the ball flies, bounces and rolls as a real football does
     # (ball_physics.py); anything the solver can't fit is at least kept straight.
     anchors = anchor_frames(ball, player_frames, held)
@@ -897,6 +899,9 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         if m is not None and m > OFFSIDE_TOLERANCE_M:
             offside_moved += ease_onside(player_frames, times, goal["scorerId"], af, m + ONSIDE_M, side, nxt)
     overlaps_after = len({k for k, *_ in overlaps(player_frames, ball, players)})
+    # A carry the viewer holds at his feet has the ball there in the clip too, wherever
+    # the corrections above have taken him (dribble.ball_at_feet).
+    ball_at_feet(ball, times, player_frames, carries)
 
     # Defenders' blocks, clearances and tackles: slides or standing, from the measured data (defense.py).
     measured = paths[ball_source]

@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "pipeline"))
 
-from dribble import find_dribbles, rebuild_dribbles, smooth_carrier
+from dribble import FOOT_AHEAD_M, ball_at_feet, find_dribbles, rebuild_dribbles, smooth_carrier
 
 T = [i / 30 for i in range(91)]  # 3 s
 
@@ -83,3 +83,15 @@ def test_a_statsbomb_carrier_trailing_the_ball_is_eased_onto_it():
     # Not backed by the tracked ball at its start: left alone.
     frames = [{"r": (20.0 + 0.2 * k - 6.0, 0.0)} for k in range(200)]
     assert not follow_carries(ball, [True] * 200, times, frames, [dict(carry, xy=(10.0, 20.0))], 190)
+
+
+def test_a_carry_left_to_the_viewer_has_the_ball_at_his_feet_in_the_clip_too():
+    # The ball was left 3 m off A (a correction moved him after); inside the
+    # carry it's at his feet, at the ends it's the touch ball.
+    ball, players = a_dribble(jitter=0.0)
+    ball = [(b[0] + 3.0, b[1], b[2]) for b in ball]
+    ends = ball[0], ball[90]
+    ball_at_feet(ball, T, players, [[0, 90, "A"]])
+    assert ball[0] == tuple(round(v, 2) for v in ends[0]) and ball[90] == tuple(round(v, 2) for v in ends[1])
+    for k in range(10, 81):
+        assert abs(math.dist(ball[k][:2], players[k]["A"]) - FOOT_AHEAD_M) < 0.05 and ball[k][2] == 0.0

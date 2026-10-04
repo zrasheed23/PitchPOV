@@ -42,7 +42,7 @@ ORIGIN_SHOOTER_M = 1.5
 END_M = 0.6
 EVENT_S = 1.0
 EVENT_M = 5.0  # StatsBomb's locations sit 1-2 m from the tracking (freeze frames, median): 5 m is a real miss
-CARRY_M = 3.0
+CARRY_M = 2.5  # during a StatsBomb carry the ball stays this close to the carrier
 CARRY_GAP_S = 0.3
 CARRY_MIN_S = 0.6
 CARRY_LOFT_Z = 1.5
@@ -177,7 +177,10 @@ def carry(clip, statsbomb):
         if e["type"] != "Carry" or (e["raw"].get("duration") or 0.0) < CARRY_MIN_S:
             continue
         a, b = _carry_frames(e, times)
-        b = min(b, kick - 1)
+        # It ends at his own next action in the clip (his pass is timed to the ball, StatsBomb's carry end isn't).
+        nxt = min((c["f"] for c in clip.get("contacts", []) if c["p"] == e["p"] and c["f"] > a + 3 and c.get("sb")),
+                  default=b + 1)
+        b = min(b, kick - 1, nxt - 1)
         run, run_from, worst, longest, high = 0, None, 0.0, 0.0, 0.0
         for k in range(a, b + 1):
             ball, p = fr[k]["b"], fr[k]["p"].get(e["p"])

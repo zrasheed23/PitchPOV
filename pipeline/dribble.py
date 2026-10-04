@@ -224,7 +224,7 @@ def _believable(ball, times, player_frames, first, last, pid):
 
 FOLLOW_M = 1.0  # during a carry the carrier's centre is at most this far from the ball
 FOLLOW_MIN_S = 0.5
-FOLLOW_AGREE_M = 3.0  # the tracked ball this close to StatsBomb's carry start backs it
+FOLLOW_AGREE_M = 3.0  # the tracked ball this close to StatsBomb's carry start (or the carrier there) backs it
 FOLLOW_FIND_S = 0.5
 FOLLOW_HIGH_Z = 1.0  # a ball higher than this (still dropping to him) doesn't place him
 FOLLOW_MAX_M = 12.0  # more than this off is a wrong track, not a lagging one: left alone
@@ -241,7 +241,7 @@ def _ease_s(d):
 def follow_carries(ball, tracked, times, player_frames, events, end):
     """Ease each StatsBomb carrier onto the ball for the length of his carry
     (events: the clip's StatsBomb events; only carries before frame `end`
-    whose start the tracked ball backs), placed from the frames where the feed
+    whose start the tracked ball backs: at StatsBomb's spot or at his feet), placed from the frames where the feed
     really has the ball (tracked) and filled in between. In place on player_frames; returns
     [(player id, first frame, largest move m)]."""
     out = []
@@ -256,7 +256,10 @@ def follow_carries(ball, tracked, times, player_frames, events, end):
             continue
         b = min(next((k for k in range(a, n) if times[k] - times[a] >= dur), n - 1), end - 1)
         find = int(round(FOLLOW_FIND_S / dt))
-        if not any(tracked[k] and ball[k] is not None and math.dist(ball[k][:2], e["xy"]) <= FOLLOW_AGREE_M
+        # The tracked ball backs the carry if it's at StatsBomb's start, or at the
+        # carrier's own feet there (StatsBomb's spots are a few metres rough).
+        if not any(tracked[k] and ball[k] is not None and min(math.dist(ball[k][:2], e["xy"]),
+                                                              math.dist(ball[k][:2], player_frames[k][pid])) <= FOLLOW_AGREE_M
                    for k in range(max(a - find, 0), min(a + find, n - 1) + 1)):
             continue
         offsets = {}
@@ -315,3 +318,22 @@ def follow_carries(ball, tracked, times, player_frames, events, end):
             player_frames[k][pid] = (x + o[0], y + o[1])
         out.append((pid, a, max(math.hypot(*o) for o in smooth)))
     return out
+
+
+CARRY_BLEND_S = 0.15  # as the viewer: the ball eases between the touch at each end and his feet
+
+
+def ball_at_feet(ball, times, player_frames, carries):
+    """Put the ball at the carrier's feet (foot_spot, on the ground) through each
+    carry the viewer holds ([first, last, player id]), easing from the touch
+    ball at each end over CARRY_BLEND_S. In place (2-decimal values)."""
+    for a, b, pid in carries:
+        for k in range(a, b + 1):
+            p = player_frames[k].get(pid)
+            if ball[k] is None or p is None:
+                continue
+            u = min(times[k] - times[a], times[b] - times[k]) / CARRY_BLEND_S
+            w = 1.0 if u >= 1 else u * u * (3 - 2 * u)
+            fx, fy, _ = foot_spot(ball[k], p, _velocity(player_frames, k, pid, times))
+            x, y, z = ball[k]
+            ball[k] = (round(x + (fx - x) * w, 2), round(y + (fy - y) * w, 2), round(z * (1 - w), 2))

@@ -357,7 +357,8 @@ def meet_touches(ball, times, player_frames, contacts, end, skip=(), players=Non
     goes to him, unless the tracked ball has already shown his track to be
     wrong in this clip (a flagged touch of his): then his other far touches
     are flagged too and the ball stays at StatsBomb's spot. The rest
-    are left for the touch rule, which moves the ball. In place on
+    are left for the touch rule, which moves the ball, and so is a touch whose
+    ease would make him sprint (_too_fast). In place on
     player_frames; returns ([(contact, metres moved)], flagged contacts, swaps).
     shot: (shooter id, kick frame, ball xy): no swap moves him off the shot.
     onside(pid, player_frames): False if a blend put a receiver offside at the
@@ -401,10 +402,28 @@ def meet_touches(ball, times, player_frames, contacts, end, skip=(), players=Non
                     elif c not in too_far:
                         too_far.append(c)
                 continue
-            # His centre just behind the ball, on the side he's coming from.
+            # His centre just behind the ball, on the side he's coming from; unless that
+            # takes a sprint (two eases close together): then the touch rule moves the ball.
             spot = (b[0] - (b[0] - p[0]) / d * FOOT_M, b[1] - (b[1] - p[1]) / d * FOOT_M)
-            moved.append((c, ease_player_to(player_frames, times, pid, f, spot)))
+            before = [fr.get(pid) for fr in player_frames]
+            gap = ease_player_to(player_frames, times, pid, f, spot)
+            if _too_fast(before, player_frames, times, pid, f, gap):
+                for k, xy in enumerate(before):
+                    if xy is not None:
+                        player_frames[k][pid] = xy
+                continue
+            moved.append((c, gap))
     return moved, too_far, swaps
+
+
+def _too_fast(before, player_frames, times, pid, f, gap):
+    """An ease_player_to of `gap` metres at frame f made him faster than
+    BLEND_TOP_MPS (or his own track's top speed) around the touch."""
+    ease = ease_time(gap, MEET_EASE_S, MEET_CATCHUP_MPS)
+    lo = next(k for k in range(len(times)) if times[k] >= times[f] - ease)
+    hi = max(k for k in range(len(times)) if times[k] <= times[f] + ease)
+    after = [fr.get(pid) for fr in player_frames]
+    return _top_speed(after, times, lo, hi + 6) > max(BLEND_TOP_MPS, _top_speed(before, times, lo, hi + 6)) + 0.05
 
 
 GAP_TO = {"H": 0.1, "X": 0.45}  # the ball from his centre at a touch: head, hands; feet FOOT_M
@@ -437,11 +456,7 @@ def close_touch_gaps(ball, times, player_frames, contacts, held, end, skip=()):
             spot = (b[0] - (b[0] - p[0]) / d * to, b[1] - (b[1] - p[1]) / d * to)
             before = [fr.get(pid) for fr in player_frames]
             gap = ease_player_to(player_frames, times, pid, f, spot)
-            ease = ease_time(gap, MEET_EASE_S, MEET_CATCHUP_MPS)
-            lo = next(k for k in range(len(times)) if times[k] >= times[f] - ease)
-            hi = max(k for k in range(len(times)) if times[k] <= times[f] + ease)
-            after = [fr.get(pid) for fr in player_frames]
-            if _top_speed(after, times, lo, hi + 6) > max(BLEND_TOP_MPS, _top_speed(before, times, lo, hi + 6)) + 0.05:
+            if _too_fast(before, player_frames, times, pid, f, gap):
                 for k, xy in enumerate(before):
                     if xy is not None:
                         player_frames[k][pid] = xy
