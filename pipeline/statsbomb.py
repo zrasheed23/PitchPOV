@@ -238,7 +238,7 @@ MAX_CONNECT_MPS = 35.0
 TRACKED_AGREE_M = 2.0  # faster than this between two touches, one of them is mistimed  # a StatsBomb "High Pass" (crosses, long balls) goes at least this high
 
 
-def merge_touches(contacts, sb, ball, tracked, times, last_frame, shooter=None, player_frames=None):
+def merge_touches(contacts, sb, ball, tracked, times, last_frame, shooter=None, player_frames=None, measured=None):
     """StatsBomb's on-ball actions as the clip's touches, merged with PFF's.
 
     Each StatsBomb touch before `last_frame` (not the goal itself) is timed to
@@ -248,7 +248,10 @@ def merge_touches(contacts, sb, ball, tracked, times, last_frame, shooter=None, 
     against one); otherwise the ball is put at StatsBomb's spot (at head or
     hand height for those body parts) and the path is re-drawn through it later. A PFF touch by the same player within SAME_TOUCH_S is
     the same touch and is dropped. The shooter's actions within SAME_TOUCH_S
-    of `last_frame` (the goal) are the shot itself: PFF's shot touch stays. Returns (contacts, ball, placed frames,
+    of `last_frame` (the goal) are the shot itself: PFF's shot touch stays.
+    measured: frames where the raw feed has the ball there (the smoothed feed is
+    pinned to PFF's own players, so it can't agree with one independently);
+    defaults to tracked. Returns (contacts, ball, placed frames,
     lofted {frame: minimum peak}, counts)."""
     out, ball = list(ball), list(ball)
     fps_dt = (times[-1] - times[0]) / max(len(times) - 1, 1)
@@ -289,21 +292,21 @@ def merge_touches(contacts, sb, ball, tracked, times, last_frame, shooter=None, 
             agree = None
             for k in range(lo, hi + 1):
                 p = player_frames[k].get(e["p"])
-                if tracked[k] and ball[k] is not None and p is not None:
+                if (measured or tracked)[k] and ball[k] is not None and p is not None:
                     d = math.hypot(ball[k][0] - p[0], ball[k][1] - p[1])
                     if d <= TRACKED_AGREE_M and (agree is None or d < agree[0]):
                         agree = (d, k)
             if agree is not None:
                 best, f = agree, agree[1]
                 counts["tracked"] += 1
+        part = e["b"]
+        if not e.get("named") and tracked[f] and out[f] is not None and out[f][2] > HEAD_FROM_Z:
+            part = "H"  # no body part logged: the measured ball at head height is a header
         if best is None:
-            z = TOUCH_Z.get(e["b"], 0.11)
+            z = TOUCH_Z.get(part, 0.11)
             ball[f] = (e["xy"][0], e["xy"][1], z)
             placed.append(f)
             counts["placed"] += 1
-        part = e["b"]
-        if not e.get("named") and tracked[f] and ball[f] is not None and ball[f][2] > HEAD_FROM_Z:
-            part = "H"  # no body part logged: the measured ball at head height is a header
         c = {"f": f, "p": e["p"], "b": part, "sb": e["type"], "xy": e["xy"]} | ({"tr": 1} if best is not None else {})
         if e["type"] == "Pass" and (e["raw"].get("pass") or {}).get("height", {}).get("name") == "High Pass":
             lofted[f] = HIGH_PASS_PEAK_M

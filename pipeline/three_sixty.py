@@ -21,8 +21,10 @@ assignment, the named ones fixed). From those matches:
   360 spot in at least MIN_FRAMES frames of a run is moved onto those spots,
   the correction smoothed between frames and eased in and out gently. A
   frozen track (PFF parks players it can't see; slower than FROZEN_MPS on
-  average) is rebuilt the same way from any frame it's off in. Keepers are
-  left to keepers.py.
+  average) is rebuilt the same way from any frame it's off in, and so is a
+  player a frame names off his track (that frame fitting the tracking). An
+  anonymous match he couldn't have reached in time from a named spot was
+  someone else, and is dropped. Keepers are left to keepers.py.
 """
 
 import json
@@ -42,10 +44,12 @@ SWAP_GAIN_M = 3.0  # the swapped labels must fit the 360 frames better by this m
 ACROSS_FRAMES = 3  # frames backing a swap across teams (the kits tell them apart: it takes more than one)
 SMOOTH_S = 0.4
 KEY_ACCEL = 8.0  # m/s²: the most a correction changes between two 360 frames (smoothing takes it to about ACCEL)
+CATCHUP_MPS = 3.0  # a correction eases in no faster than this on top of his run (as ball_rules.MEET_CATCHUP_MPS)
 FROZEN_MPS = 0.8  # a track moving slower than this on average (up to his last 360 frame) is frozen
 SHIFT_ROUNDS = 3
 ACTOR_EVENT_M = 5.0  # a 360 frame's actor this far from the event's own location is the wrong way round
 MIN_SHIFT_PLAYERS = 6  # fewer matched players than this: the frame's shift can't be fitted (left at 0)
+NAMED_FIT_M = 2.0  # a frame whose matched players sit this close to their tracks (median) places its named players
 
 
 @lru_cache(maxsize=None)
@@ -306,10 +310,17 @@ def correct_tracks(frames, player_frames, times, players, fixed=None):
     place; returns {player id: largest correction (m)}."""
     fixed = fixed or {}
     seen = {}  # pid -> [(frame, 360 spot)]
+    named_at = set()  # (pid, frame): named in a frame the other tracked players fit (a strong key)
     for fr in frames:
-        for pid, xy in match_frame(fr, player_frames[fr["f"]], players).items():
+        at = player_frames[fr["f"]]
+        m = match_frame(fr, at, players)
+        fit = sorted(math.dist(at[q], xy) for q, xy in m.items())
+        good = len(fit) >= MIN_SHIFT_PLAYERS and _median(fit) <= NAMED_FIT_M
+        for pid, xy in m.items():
             if players[pid]["position"] != "GK":  # keepers: keepers.py, on StatsBomb's freeze frame
                 seen.setdefault(pid, []).append((fr["f"], xy))
+                if good and any(n == pid for _, _, n in fr["points"]):
+                    named_at.add((pid, fr["f"]))
     moved = {}
     n = len(player_frames)
     for pid, obs in seen.items():
@@ -327,7 +338,9 @@ def correct_tracks(frames, player_frames, times, players, fixed=None):
             if f is not None and math.hypot(*o) > OFF_M:
                 run.append(f)
                 continue
-            if len(run) >= (1 if frozen else MIN_FRAMES):
+            # A run counts if long enough, or if a frame in it names him (and the
+            # rest of that frame fits the tracking): StatsBomb saw him there.
+            if len(run) >= (1 if frozen else MIN_FRAMES) or any((pid, g) in named_at for g in run):
                 good.update(run)
             run = []
         if not good:
@@ -335,6 +348,12 @@ def correct_tracks(frames, player_frames, times, players, fixed=None):
         # Every 360 frame he's matched in is a key: his correction there, or none
         # where he's close (or off for too short a run to trust).
         keys = [(f, o if f in good else (0.0, 0.0)) for f, o in off]
+        # An anonymous match he couldn't have run from or to in time, against a
+        # frame that names him off his track, was someone else: dropped.
+        strong = [(f, o) for f, o in keys if (pid, f) in named_at and f in good]
+        keys = [(f, o) for f, o in keys if (pid, f) in named_at or not any(
+            math.hypot(o[0] - so[0], o[1] - so[1]) > min(KEY_ACCEL * (times[f] - times[sf]) ** 2 / 6,
+                                                        CATCHUP_MPS * abs(times[f] - times[sf])) for sf, so in strong)]
         # Each key's correction differs from the last by no more than a gentle ease
         # (ACCEL) can cover in the time between: 360 spots jitter, players don't.
         limited = [keys[0]]
@@ -359,7 +378,8 @@ def correct_tracks(frames, player_frames, times, players, fixed=None):
             elif t < times[first[0]]:
                 u = 1.0
                 if not frozen:
-                    ease = math.sqrt(6 * math.hypot(*first[1]) / ACCEL)
+                    d = math.hypot(*first[1])
+                    ease = max(math.sqrt(6 * d / ACCEL), d / CATCHUP_MPS)
                     u = max(1 - (times[first[0]] - t) / ease, 0.0) if ease > 0 else 1.0
                 w = u * u * (3 - 2 * u)
                 o = (first[1][0] * w, first[1][1] * w)

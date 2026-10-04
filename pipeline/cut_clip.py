@@ -49,6 +49,7 @@ MAX_GAP_FRAMES = 15  # fill ball gaps up to ~0.5 s; longer gaps stay null
 PITCH_LENGTH = 105.0
 PITCH_WIDTH = 68.0
 BALL_SOURCES = ("raw", "smoothed")
+RAW_SAME_M = 1.0  # the clip's ball this close to the raw feed's is the raw feed's measurement
 RAW_BALL_MAX_M = 8.0  # use raw unless its ball is farther than this from every scoring-team player at the shot
 # Periods where PFF's tracking puts each team's positions under the other
 # team's labels, for the whole period (see player_lists): the keepers defend
@@ -630,8 +631,12 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
     kick0 = goal_index if penalty or (shot_spot is not None and not direct) else find_kick(ball, times, player_frames, goal["scorerId"],
                                                                          goal_index, side=side)
     sb_clip, sb_shift = clip_statsbomb(meta, roster, events, frame_ms, players, player_frames, ball, tracked, goal, side)
+    # The raw feed's own ball (the smoothed one is pinned to PFF's players): independent of their tracks.
+    measured = [raw_ball[k] is not None and ball[k] is not None and math.dist(raw_ball[k][:2], ball[k][:2]) <= RAW_SAME_M
+                for k in range(len(ball))]
     contacts, ball, sb_placed, lofted, sb_counts = merge_touches(
-        contacts, [] if penalty else sb_clip, ball, tracked, times, max(goal_index, kick0), goal["scorerId"], player_frames)
+        contacts, [] if penalty else sb_clip, ball, tracked, times, max(goal_index, kick0), goal["scorerId"], player_frames,
+        measured)
     # With StatsBomb covering the clip, only its actors touch the ball: a PFF touch
     # stays only inside that player's StatsBomb carry (his dribbling touches) or as
     # the shot itself; the rest are PFF's own copies of StatsBomb's touches, or
@@ -794,9 +799,11 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
                                                    ball[min(shot_info.get("line_frame") or shot["f"] + 5, len(ball) - 1)][:2])
     # Every goal stood: the scorer is onside when the last pass to him is played (offside.py).
     offside_moved, pass_retimed = 0.0, 0.0
+    onside_at = None  # (assist frame, scorer's next touch) to check again once everyone has moved
     if not penalty and not goal["ownGoal"]:
         assist, af = find_assist(sb_clip, goal["scorerId"], shot["f"], contacts)
         if assist is not None and ball[af] is not None:
+            onside_at = (af, next((c["f"] for c in contacts if c["p"] == goal["scorerId"] and c["f"] > af), None))
             team_of = {pid: p["team"] for pid, p in players.items()}
             m = offside_margin(player_frames[af], ball[af][:2], team_of, goal["scorerId"], side)
             if m is not None and m > OFFSIDE_TOLERANCE_M:
@@ -807,6 +814,7 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
                     new_af = retime_pass(ball, times, contacts, player_frames, goal["scorerId"], af, nxt, fly)
                     if new_af != af:
                         pass_retimed = round(times[af] - times[new_af], 2)
+                        onside_at = (new_af, nxt)
                         pb, pp = ball[new_af], player_frames[new_af].get(assist["p"])
                         if pb is not None and pp is not None and math.dist(pb[:2], pp) > FOOT_M:
                             d = math.dist(pb[:2], pp)  # the passer at the ball, earlier in his run
@@ -877,6 +885,12 @@ def build_clip(meta, roster, goal, frames, goal_index, override=None, events=Non
         smoothed[pid] = max(smoothed.get(pid, 0.0), m)  # and whatever that cap sharpened is smoothed again
     nudges += clear_bodies(ball, times, player_frames, contacts, held, crossing,
                            skip={defender: shot["f"]} if defender else None, rounds=3)
+    # Separation and the limits can nudge the line by a few tenths: the scorer onside again at the pass.
+    if onside_at is not None and ball[onside_at[0]] is not None:
+        af, nxt = onside_at
+        m = offside_margin(player_frames[af], ball[af][:2], team_of, goal["scorerId"], side)
+        if m is not None and m > OFFSIDE_TOLERANCE_M:
+            offside_moved += ease_onside(player_frames, times, goal["scorerId"], af, m + ONSIDE_M, side, nxt)
     overlaps_after = len({k for k, *_ in overlaps(player_frames, ball, players)})
 
     # Defenders' blocks, clearances and tackles: slides or standing, from the measured data (defense.py).

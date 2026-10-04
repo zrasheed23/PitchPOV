@@ -517,7 +517,8 @@ def limit_player_accels(player_frames, reference, times, fixed, top=ACCEL_TOP, a
     each stretch that breaks it has its correction re-drawn as the smoothest
     curve (a clamped cubic spline) that meets the correction and its rate of
     change at both ends and passes through his frames in fixed[pid] (touches,
-    a keeper's dive) unchanged; a stretch still too sharp is widened. From
+    a keeper's dive) unchanged; a stretch still too sharp, or now faster than
+    PLAYER_TOP_MPS, is widened. From
     frame `after` (the goal) the limit is top_after. In place; returns
     {player id: largest change (m)}."""
     n, w = len(player_frames), ACCEL_WINDOW
@@ -536,6 +537,10 @@ def limit_player_accels(player_frames, reference, times, fixed, top=ACCEL_TOP, a
             limit = top_after if after is not None and k >= after else top
             return _accel(track, times, k) > max(limit, _accel(ref, times, k) + 1.0)
 
+        def too_fast(k):  # the re-drawn stretch stays under the sprint cap (unless PFF's own track isn't)
+            dt = times[k] - times[k - 1]
+            return dt > 0 and math.dist(track[k], track[k - 1]) / dt > max(PLAYER_TOP_MPS, math.dist(ref[k], ref[k - 1]) / dt) + 0.05
+
         bad = [k for k in range(w, n - w) if breaks(k)]
         stretches = []  # [first, last, frame that broke the limit]
         for k in bad:
@@ -549,11 +554,14 @@ def limit_player_accels(player_frames, reference, times, fixed, top=ACCEL_TOP, a
                     break
                 knots = [lo] + [f for f in sorted(keep) if lo < f < hi] + [hi]
 
+                # Ends meet the correction as it is now (an overlapping stretch may already be re-drawn there).
+                ends = list(corr)
+
                 def slope(k, d):
                     j0, j1 = max(k - 2, 0), min(k + 2, n - 1)
-                    return (start[j1][d] - start[j0][d]) / (times[j1] - times[j0])
+                    return (ends[j1][d] - ends[j0][d]) / (times[j1] - times[j0])
                 for d in range(2):
-                    f = clamped_spline([times[k] for k in knots], [start[k][d] for k in knots], slope(lo, d), slope(hi, d))
+                    f = clamped_spline([times[k] for k in knots], [ends[k][d] for k in knots], slope(lo, d), slope(hi, d))
                     for k in range(lo + 1, hi):
                         if k not in keep:
                             c = list(corr[k])
@@ -561,7 +569,7 @@ def limit_player_accels(player_frames, reference, times, fixed, top=ACCEL_TOP, a
                             corr[k] = tuple(c)
                 for k in range(lo, hi + 1):
                     track[k] = (ref[k][0] + corr[k][0], ref[k][1] + corr[k][1])
-                if not any(breaks(k) for k in range(max(w, lo - w), min(n - w, hi + w + 1))):
+                if not any(breaks(k) or too_fast(k) for k in range(max(w, lo - w), min(n - w, hi + w + 1))):
                     break
                 if times[k0] - times[lo] >= reach and times[hi] - times[k0] >= reach:
                     break
