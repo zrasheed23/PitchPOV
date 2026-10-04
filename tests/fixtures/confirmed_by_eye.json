@@ -1,0 +1,42 @@
+{
+  "_about": "Outcomes Zayd has confirmed by watching the clip. Keyed by clip file name; add entries as clips are checked. test_confirmed_by_eye.py checks every build against them. An entry with \"xfail\" is known to fail (the reason says why); remove it once the build gets it right.",
+  "poses": {
+    "10517_6738451.json": {"pose": "scissor", "who": "Kylian Mbappé 80:58, final"},
+    "3827_6531348.json": {"pose": "scissor", "who": "Richarlison 72:54 v Serbia"},
+    "10507_6643326.json": {"pose": "half", "who": "Seung-ho Paik 75:48 v Brazil (half volley)"},
+    "3844_6594399.json": {"pose": "volley", "who": "Kalidou Koulibaly 69:29 v Ecuador (standing, leaning volley; no jump)"},
+    "3840_6570985.json": {"pose": "volley", "who": "Jean-Charles Castelletto 28:06 v Serbia (tap-in, not acrobatic)"},
+    "10517_6738550.json": {"pose": "none", "who": "Ángel Di María 35:21, final"},
+    "10516_6730425.json": {"pose": "none", "who": "Josko Gvardiol 06:26 v Morocco (diving header: no pose)"}
+  },
+  "pose_counts": {
+    "bicycle": 0
+  },
+  "sequences": {
+    "10517_6738451.json": {"who": "Kylian Mbappé 80:58, final: Rabiot's long ball, Mbappé's header down to Thuram, Thuram's right foot back, Mbappé's volley (no self-touches)",
+                           "touches": ["Kingsley Coman", "Adrien Rabiot", "Kylian Mbappé", "Marcus Thuram", "Kylian Mbappé"],
+                           "last_parts": ["H", "R", "R"]},
+    "10516_6730425.json": {"who": "Josko Gvardiol 06:26 v Morocco: Majer free kick, Perišić flick, Gvardiol header",
+                           "touches": ["Lovro Majer", "Ivan Perisic", "Josko Gvardiol"], "shot_part": "H"},
+    "10517_6738550.json": {"who": "Ángel Di María 35:21, final (correct as is)",
+                           "touches": ["Dayot Upamecano", "Nahuel Molina", "Alexis Mac Allister", "Lionel Messi",
+                                       "Julian Alvarez", "Alexis Mac Allister", "Ángel Di María"]}
+  },
+  "shots": {
+    "3840_6570985.json": {"who": "Jean-Charles Castelletto 28:06 v Serbia: tap-in from right next to the right post (attacker's view)",
+                          "post": "right", "post_m": 2.5, "shooter_m": 1.2},
+    "10517_6738550.json": {"who": "Ángel Di María 35:21, final (correct as is)", "shooter_m": 1.2}
+  },
+  "shooters": {
+    "3845_6594882.json": {"who": "Cody Gakpo 25:54 v Qatar: Gakpo shoots (an identity swap used to give it to Timber)",
+                          "shooter": "Cody Gakpo"}
+  },
+  "separations": {
+    "3830_6538457.json": {"who": "Enner Valencia 48:44 v Netherlands: Noppert and Valencia apart at the kick (StatsBomb: 1.2 m)",
+                          "a": "Andries Noppert", "b": "Enner Valencia", "min_m": 1.0}
+  },
+  "shot_spots": {
+    "3837_6549996.json": {"who": "Zakaria Aboukhlal 91:50 v Belgium: tap-in near the six-yard box, not a 17 m shot",
+                          "within_m": 2.0}
+  }
+}

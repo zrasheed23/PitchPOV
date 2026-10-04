@@ -1,0 +1,173 @@
+{
+  "10517_6738451.json": {
+    "ballSource": "smoothed",
+    "note": "raw ball ~8 m from Mbappé at the shot"
+  },
+  "3819_6506643.json": {
+    "ballSource": "raw",
+    "reviewed": true,
+    "note": "reviewed on the 2D review sheet: looks right"
+  },
+  "3822_6521607.json": {
+    "ballSource": "raw",
+    "reviewed": true,
+    "note": "reviewed on the 2D review sheet: looks right"
+  },
+  "3826_6529791.json": {
+    "ballSource": "raw",
+    "reviewed": true,
+    "note": "reviewed on the 2D review sheet: looks right"
+  },
+  "3830_6538171.json": {
+    "ballSource": "raw",
+    "reviewed": true,
+    "note": "reviewed on the 2D review sheet: looks right"
+  },
+  "3833_6542668.json": {
+    "ballSource": "raw",
+    "reviewed": true,
+    "note": "reviewed on the 2D review sheet: looks right"
+  },
+  "3840_6570584.json": {
+    "ballSource": "raw",
+    "reviewed": true,
+    "note": "reviewed on the 2D review sheet: looks right"
+  },
+  "10502_6629994.json": {
+    "ballSource": "smoothed",
+    "reviewed": true,
+    "note": "reviewed on the 2D review sheet: looks right"
+  },
+  "10509_6651144.json": {
+    "ballSource": "raw",
+    "reviewed": true,
+    "note": "reviewed on the 2D review sheet: looks right"
+  },
+  "10509_6652456.json": {
+    "ballSource": "raw",
+    "reviewed": true,
+    "note": "reviewed on the 2D review sheet: looks right"
+  },
+  "10515_6719156.json": {
+    "ballSource": "raw",
+    "reviewed": true,
+    "note": "reviewed on the 2D review sheet: looks right"
+  },
+  "3829_6536407.json": {
+    "ballSource": "smoothed",
+    "reviewed": true,
+    "note": "reviewed on the 2D review sheet: looks right"
+  },
+  "3837_6549996.json": {
+    "ballSource": "smoothed",
+    "note": "raw ball 23.2 m from the scorer at the shot"
+  },
+  "3840_6570985.json": {
+    "ballSource": "smoothed",
+    "note": "raw ball 11.0 m from the scorer at the shot"
+  },
+  "3840_6571766.json": {
+    "ballSource": "smoothed",
+    "note": "raw ball 26.5 m from the scorer at the shot"
+  },
+  "3841_6573439.json": {
+    "ballSource": "smoothed",
+    "note": "raw ball 8.1 m from the scorer at the shot"
+  },
+  "3844_6594399.json": {
+    "ballSource": "smoothed",
+    "note": "raw ball 9.0 m from the scorer at the shot"
+  },
+  "3845_6593427.json": {
+    "ballSource": "smoothed",
+    "note": "raw ball 23.5 m from the scorer at the shot"
+  },
+  "3847_6596741.json": {
+    "ballSource": "smoothed",
+    "note": "raw ball 6.3 m from the scorer at the shot"
+  },
+  "3851_6607971.json": {
+    "ballSource": "smoothed",
+    "note": "raw ball 12.2 m from the scorer at the shot"
+  },
+  "3853_6615519.json": {
+    "ballSource": "smoothed",
+    "note": "raw ball 6.7 m from the scorer at the shot; synthesized shot checked by eye",
+    "reviewed": true
+  },
+  "3856_6626017.json": {
+    "ballSource": "smoothed",
+    "note": "raw ball 15.5 m from the scorer at the shot"
+  },
+  "3856_6623948.json": {
+    "ballSource": "smoothed",
+    "note": "raw ball 6.2 m from the scorer at the shot"
+  },
+  "3857_6623996.json": {
+    "ballSource": "smoothed",
+    "note": "raw ball 7.2 m from the scorer at the shot"
+  },
+  "10509_6651262.json": {
+    "ballSource": "smoothed",
+    "reviewed": true,
+    "note": "reviewed on the 2D review sheet: looks right"
+  },
+  "3812_6498461.json": {
+    "ballSource": "smoothed",
+    "note": "raw path never reaches the goal; trying smoothed + goal-mouth correction; synthesized header checked by eye",
+    "reviewed": true
+  },
+  "3812_6498837.json": {
+    "ballSource": "smoothed",
+    "note": "raw path never reaches the goal; trying smoothed + goal-mouth correction; synthesized shot checked by eye",
+    "reviewed": true
+  },
+  "3829_6536289.json": {
+    "ballSource": "smoothed",
+    "note": "raw path never reaches the goal; trying smoothed + goal-mouth correction; synthesized header checked by eye",
+    "reviewed": true
+  },
+  "3835_6546769.json": {
+    "ballSource": "smoothed",
+    "note": "raw path never reaches the goal; trying smoothed + goal-mouth correction"
+  },
+  "3841_6573355.json": {
+    "ballSource": "smoothed",
+    "note": "raw path never reaches the goal; trying smoothed + goal-mouth correction; synthesized header checked by eye",
+    "reviewed": true
+  },
+  "10512_6667234.json": {
+    "ballSource": "smoothed",
+    "note": "raw path never reaches the goal; trying smoothed + goal-mouth correction; synthesized shot checked by eye",
+    "reviewed": true
+  },
+  "3822_6522701.json": {
+    "exclude": true,
+    "note": "smoothed ball doesn't reach the goal and raw is worse"
+  },
+  "3826_6528681.json": {
+    "exclude": true,
+    "note": "penalty: Ronaldo drawn 16 m from the ball on the spot"
+  },
+  "10516_6730494.json": {
+    "exclude": true,
+    "note": "correction shifts the ball 12.9 m; raw is ~20 m from Dari"
+  },
+  "3840_6570857.json": {
+    "ballSource": "smoothed",
+    "note": "raw ball 6.2 m from the scorer, already at the goal line at the shot"
+  },
+  "3826_6528916.json": {
+    "ballSource": "raw",
+    "reviewed": true,
+    "note": "reviewed on the 2D review sheet: looks right"
+  },
+  "3816_6502181.json": {
+    "ballSource": "smoothed",
+    "note": "raw ball flies 5 m past the goal line and 13 m up before the shot (tracking error); smoothed follows Romero's clearance dropping to Al-Dawsari"
+  },
+  "3822_6521934.json": {
+    "exclude": true,
+    "note": "neither feed has the shot: smoothed is stuck to Torres 26 m out, raw drifts past defenders and creeps into the goal 5.5 s after the goal event"
+  }
+}

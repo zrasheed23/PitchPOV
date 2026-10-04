@@ -1,0 +1,105 @@
+"""How the scorer strikes the ball, from StatsBomb's shot technique.
+
+Acrobatic goals are rare, so only the goal's shot is ever acrobatic, and only
+when StatsBomb says so:
+- Normal, Lob, Diving Header: an ordinary kick or header (no pose).
+- Half Volley: a standing half-volley pose ("half").
+- Volley: a standing volley ("volley"), or a scissor kick ("scissor") if the
+  tracking measured the ball between SCISSOR_Z at the contact and he's side-on
+  to where he sends it (SIDE_ON_DEG either side of square), by majority over
+  the contact frame +-VOTE_FRAMES (so moving the kick a frame or two can't
+  flip it). The height is the ball feed's own (the median of its samples
+  within MEASURE_FRAMES), not the clip's: the touch rule caps a foot touch at
+  1.2 m, so the clip's height can't tell a scissor from a volley. No measured
+  height in range (a gap, or a feed height no foot reaches) is no evidence,
+  and an acrobatic pose needs evidence: it's a volley.
+- Overhead Kick: a bicycle kick ("bicycle"). No 2022 goal has it.
+The pose goes on the shot contact as "v". Other touches never get one.
+
+Facing: where he's running over the last FACING_S before the touch if he's
+moving, else toward where the ball comes from (players face the ball).
+"""
+
+import math
+from collections import Counter
+
+SCISSOR_Z = (0.9, 2.0)  # the measured ball at the contact: hip to chest height in the air
+MEASURE_FRAMES = 2
+SIDE_ON_DEG = 30.0  # facing 90 +- this many degrees from the shot's direction: side-on
+FACING_S = 0.3
+MOVING_MPS = 1.5
+VOTE_FRAMES = 2  # the pose is the majority over the contact frame +- this many
+POSES = {"Half Volley": "half", "Volley": "volley", "Overhead Kick": "bicycle"}
+
+
+def facing(player_frames, ball, times, pid, f):
+    """Unit (x, y) the player faces at frame f, or None."""
+    p = player_frames[f].get(pid)
+    back = next((k for k in range(f, -1, -1) if times[f] - times[k] >= FACING_S), 0)
+    q = player_frames[back].get(pid)
+    if p is None:
+        return None
+    if q is not None and times[f] > times[back]:
+        vx, vy = (p[0] - q[0]) / (times[f] - times[back]), (p[1] - q[1]) / (times[f] - times[back])
+        if math.hypot(vx, vy) >= MOVING_MPS:
+            n = math.hypot(vx, vy)
+            return vx / n, vy / n
+    b = ball[back]
+    if b is None:
+        return None
+    dx, dy = b[0] - p[0], b[1] - p[1]
+    n = math.hypot(dx, dy)
+    return (dx / n, dy / n) if n > 1e-6 else None
+
+
+def measured_height(tracked, k):
+    """The ball feed's height at frame k: the median of its samples within
+    MEASURE_FRAMES, or None if it has none there."""
+    zs = sorted(tracked[j][2] for j in range(max(k - MEASURE_FRAMES, 0), min(k + MEASURE_FRAMES + 1, len(tracked)))
+                if tracked[j] is not None)
+    return zs[len(zs) // 2] if zs else None
+
+
+def _pose_at(technique, ball, times, player_frames, pid, k, direction, tracked):
+    """The pose if the contact were at frame k: the measured ball height at k
+    and his facing then, against the shot's direction. Returns (pose, z, angle)."""
+    pose = POSES.get(technique)
+    z = measured_height(tracked, k)
+    angle = None
+    face = facing(player_frames, ball, times, pid, k)
+    if face is not None and direction is not None:
+        dx, dy = direction
+        angle = math.degrees(math.acos(max(-1.0, min(1.0, face[0] * dx + face[1] * dy))))
+    if (pose == "volley" and z is not None and SCISSOR_Z[0] <= z <= SCISSOR_Z[1] and angle is not None
+            and abs(angle - 90) <= SIDE_ON_DEG):
+        pose = "scissor"
+    return pose, z, angle
+
+
+def shot_pose(shot, technique, ball, times, player_frames, tracked=None):
+    """Set shot["v"] from the StatsBomb technique (in place). The height and
+    facing are taken at the contact frame itself, and the decision is the
+    majority over the contact frame +-VOTE_FRAMES, so it doesn't flip when the
+    kick frame moves by a frame or two. tracked: the ball feed per frame
+    ((x, y, z) or None where it had no ball), for the measured height; without
+    it there's no measurement. Returns (pose or None, measured ball height at
+    the contact or None, degrees between his facing and the shot's direction or None)."""
+    tracked = tracked if tracked is not None else [None] * len(ball)
+    f, pid = shot["f"], shot["p"]
+    direction = None
+    after = next((k for k in range(f + 1, len(ball)) if times[k] - times[f] >= 0.2 and ball[k] is not None), None)
+    if after is not None and ball[f] is not None:
+        dx, dy = ball[after][0] - ball[f][0], ball[after][1] - ball[f][1]
+        n = math.hypot(dx, dy)
+        if n > 1e-6:
+            direction = (dx / n, dy / n)
+    here = _pose_at(technique, ball, times, player_frames, pid, f, direction, tracked)
+    votes = Counter(_pose_at(technique, ball, times, player_frames, pid, k, direction, tracked)[0]
+                    for k in range(max(f - VOTE_FRAMES, 0), min(f + VOTE_FRAMES, len(ball) - 1) + 1))
+    top = max(votes.values())
+    pose = here[0] if votes[here[0]] == top else next(p for p, n in votes.items() if n == top)
+    if pose:
+        shot["v"] = pose
+    else:
+        shot.pop("v", None)
+    return pose, here[1], here[2]
