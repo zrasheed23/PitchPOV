@@ -3,7 +3,8 @@
 tests/fixtures/confirmed_by_eye.json lists them; extend it as clips are
 checked. An entry with "xfail" is a known failure (strict: the test fails
 once it passes, so the entry gets flipped). These read the built clips in
-clips/ (run build_all.py first) and are skipped if there are none.
+clips/ (run build_all.py first) and are skipped if there are none, or if
+a confirmed clip's match wasn't built.
 """
 import json
 import math
@@ -31,7 +32,10 @@ def cases(section):
 
 
 def load(name):
-    return json.loads((CLIPS / name).read_text())
+    path = CLIPS / name
+    if not path.exists():
+        pytest.skip(f"{name} not built (only some matches in data/raw/)")
+    return json.loads(path.read_text())
 
 
 @pytest.mark.parametrize("name", cases("poses"))
