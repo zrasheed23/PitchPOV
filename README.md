@@ -76,7 +76,7 @@ PFF tracking + events          StatsBomb events + 360 frames
 
 - Python 3.13 (see `.python-version`)
 - Node.js 24 (see `web/.nvmrc`; Vite 8 needs at least 20.19 or 22.12)
-- About 5 GB of disk for the raw data and 250 MB for the built clips
+- About 5 GB of disk for the raw data and about 50 MB for the built clips
 
 ### b. Getting the data
 
@@ -143,12 +143,12 @@ python pipeline/build_all.py
 
 `build_all.py` builds every match in `data/raw/`, writes `clips/{gameId}_{gameEventId}.json` per goal
 plus `clips/index.json`, and prints a validation report (it also writes `clips/quality_report.md`).
-The full build of all 64 matches takes about BUILD_TIME_FULL; it uses every CPU core by default
-(`--jobs N` to change that).
+The full build of all 64 matches takes about 2.5 minutes on a 10-core laptop, longer with fewer
+cores. It uses every core by default (`--jobs N` to change that).
 
 For a quick test, build one match: put only that match's four files in `data/raw/` (or move the
 others out) and run the same command. The final, `10517`, has six goals and takes about
-BUILD_TIME_ONE. The report will warn that only 1 of 64 matches is present; that is expected.
+20 seconds. The report will warn that only 1 of 64 matches is present; that is expected.
 
 `pipeline/shot_placement.json` (where each shot crossed the goal line, from StatsBomb) is checked in.
 It only needs regenerating if goals are added or removed:
@@ -174,8 +174,9 @@ The first goal in the index loads on start. Click **Browse goals** to pick anoth
 search for a player or team. A goal can also be linked directly with its clip name, for example
 http://localhost:5173/#10517_6738451.
 
-Controls: space to play or pause, left and right arrows to step, drag to orbit, scroll to zoom,
-double-click the pitch to fly closer or a player to see from his position.
+Controls: space to play or pause, the time bar to scrub (arrow keys step when it has focus),
+**Jump to shot**, drag to orbit, scroll to zoom, double-click the pitch to fly closer or a player
+to see from his position.
 
 ### e. Running the tests
 
@@ -188,9 +189,14 @@ npx tsc -b                  # typecheck
 npm run lint
 ```
 
+The tests in `tests/test_confirmed_by_eye.py` check specific built clips against what was confirmed
+by watching them. They are skipped for any match you haven't built, so a one-match build shows some
+skips.
+
 ## Known limitations
 
-- Players are simple shapes with shirt numbers and a few poses, not animated human models.
+- Players are simple low-detail figures with shirt numbers and a few poses, not animated human
+  models.
 - Some PFF tracks are still wrong where StatsBomb has no frame to correct them, so a player can be
   metres from where he really was.
 - A few clips fail quality checks: 69 of 166 pass every check in `clips/quality_report.md`, and 3 are
