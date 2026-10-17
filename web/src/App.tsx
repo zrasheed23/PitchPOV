@@ -1,5 +1,5 @@
 import { OrbitControls } from '@react-three/drei'
-import { Canvas } from '@react-three/fiber'
+import { Canvas, type RootState, advance } from '@react-three/fiber'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type * as THREE from 'three'
 import { buildBallTrack } from './ballTrack'
@@ -16,6 +16,10 @@ import type { Playback } from './playback'
 import { Replay } from './Replay'
 
 const CLIPS_URL = `${import.meta.env.BASE_URL}clips/`
+// ?capture: frame-by-frame capture for the README GIF (scripts/capture_demo.mjs). The render loop
+// stops and the script steps it a fixed time at a time. Off without the query, so nothing changes.
+const CAPTURE = new URLSearchParams(location.search).has('capture')
+let captureState: RootState['get'] | null = null
 
 async function fetchJson<T>(url: string): Promise<T> {
   const r = await fetch(url)
@@ -53,6 +57,16 @@ export default function App() {
       clip: clip ? `${clip.gameId}_${clip.gameEventId}` : null,
       setPreset: (preset: View['preset']) => setView((v) => ({ preset, seq: v.seq + 1 })),
     }
+  useEffect(() => {
+    if (!CAPTURE) return
+    ;(window as unknown as { __capture: unknown }).__capture = {
+      clip: clip ? `${clip.gameId}_${clip.gameEventId}` : null,
+      playback: playback.current,
+      handOver: () => setView((v) => ({ preset: null, seq: v.seq + 1 })), // the script sets the camera
+      state: () => captureState?.(),
+      advance: (seconds: number) => advance(seconds), // render one frame at this clock time
+    }
+  }, [clip])
 
   // Load a goal's clip, then start it from the top with the default camera.
   const loadGoal = useCallback((g: GoalEntry) => {
@@ -152,7 +166,15 @@ export default function App() {
 
   return (
     <>
-      <Canvas shadows dpr={[1, 1.5]} camera={{ position: [0, 40, 70], fov: 40, near: 0.3, far: 600 }}>
+      <Canvas
+        shadows
+        dpr={[1, 1.5]}
+        camera={{ position: [0, 40, 70], fov: 40, near: 0.3, far: 600 }}
+        frameloop={CAPTURE ? 'never' : 'always'}
+        onCreated={(s) => {
+          if (CAPTURE) captureState = s.get
+        }}
+      >
         <color attach="background" args={['#0c1424']} />
         <fog attach="fog" args={['#0c1424', 140, 320]} />
         <hemisphereLight args={['#dfe8ff', '#2a3a2a', 0.9]} />

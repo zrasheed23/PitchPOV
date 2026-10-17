@@ -17,8 +17,12 @@ What works now:
 
 ## Demo
 
-- GIF: coming soon
-- Live link: coming soon
+![Mbappé's 81st-minute volley in the final, Argentina v France](docs/demo.gif)
+
+Mbappé's 81st-minute volley in the final. The GIF is rendered frame by frame from the viewer with
+`node web/scripts/capture_demo.mjs` (needs ffmpeg and gifsicle).
+
+Live link: coming soon
 
 ## How it works
 
