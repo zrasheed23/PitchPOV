@@ -82,7 +82,7 @@ const AIR_SPIN_MAX = 6 // rad/s
 const AIR_SPIN_DECAY = 0.6 // per second
 const ESTIMATED_BALL_OPACITY = 0.55 // ball drawn this faded where its position is estimated
 const BALL_RADIUS = 0.16 // a bit larger than a real ball (0.11) so it reads from afar
-const LABEL_Y = PLAYER_HEIGHT + 0.75
+const LABEL_Y = PLAYER_HEIGHT + 0.55
 const STRIDE_M = 2.4 // metres per full running cycle (two steps)
 const TURN_DAMPING = 10
 const FACE_BALL_MPS = 1.2 // slower than this, a player turns to watch the ball
@@ -171,10 +171,17 @@ function numberTexture(n: number): THREE.CanvasTexture {
 }
 
 // Floating number for reading the play from far away; fades out up close,
-// where the number on the shirt takes over.
-const LABEL_FADE_NEAR = 22
-const LABEL_FADE_FAR = 40
+// where the number on the shirt takes over. The fade is short: a long one left
+// big half-transparent numbers hanging over players 22-40 m away, which read as
+// numbers with nobody under them.
+const LABEL_FADE_NEAR = 24
+const LABEL_FADE_FAR = 30
+const BODY_CENTRE_Y = PLAYER_HEIGHT / 2
+const BODY_RADIUS = PLAYER_HEIGHT / 2
 const labelPos = new THREE.Vector3()
+const body = new THREE.Sphere()
+const frustum = new THREE.Frustum()
+const viewProj = new THREE.Matrix4()
 
 function PlayerLabel({ number }: { number: number }) {
   const texture = useMemo(() => numberTexture(number), [number])
@@ -182,11 +189,17 @@ function PlayerLabel({ number }: { number: number }) {
   const sprite = useRef<THREE.Sprite>(null)
   useFrame(({ camera }) => {
     const sp = sprite.current
-    if (!sp) return
+    const player = sp?.parent
+    if (!sp || !player) return
     const d = camera.position.distanceTo(sp.getWorldPosition(labelPos))
     const k = Math.min(Math.max((d - LABEL_FADE_NEAR) / (LABEL_FADE_FAR - LABEL_FADE_NEAR), 0), 1)
+    // Only over a player who is drawn and on screen: never a number on its own
+    // (his body below the frame edge, or hidden for the player's-eye view).
+    player.getWorldPosition(body.center).y += BODY_CENTRE_Y
+    body.radius = BODY_RADIUS
+    frustum.setFromProjectionMatrix(viewProj.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse))
     sp.material.opacity = k
-    sp.visible = k > 0.01
+    sp.visible = k > 0.01 && player.visible && frustum.intersectsSphere(body)
   })
   return (
     <sprite ref={sprite} position={[0, LABEL_Y, 0]} scale={[1.1, 1.1, 1]}>

@@ -75,16 +75,15 @@ function boardTexture(): THREE.CanvasTexture {
   g.addColorStop(1, '#0b2a6b')
   ctx.fillStyle = g
   ctx.fillRect(0, 0, c.width, c.height)
-  ctx.fillStyle = '#ffffff'
   ctx.font = 'bold 38px system-ui, sans-serif'
   ctx.textBaseline = 'middle'
-  ctx.fillText('GOAL REPLAY', 40, 34)
-  ctx.fillStyle = '#7fb4ff'
-  ctx.fillText('2022', 330, 34)
-  ctx.fillStyle = '#ffffff'
-  ctx.fillText('GOAL REPLAY', 560, 34)
-  ctx.fillStyle = '#7fb4ff'
-  ctx.fillText('2022', 850, 34)
+  const gap = ctx.measureText('PitchPOV').width + 24
+  for (const x of [40, 560]) {
+    ctx.fillStyle = '#ffffff'
+    ctx.fillText('PitchPOV', x, 34)
+    ctx.fillStyle = '#7fb4ff'
+    ctx.fillText('2022', x + gap, 34)
+  }
   const tex = new THREE.CanvasTexture(c)
   tex.colorSpace = THREE.SRGBColorSpace
   tex.wrapS = THREE.RepeatWrapping
